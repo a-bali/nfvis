@@ -1,0 +1,18 @@
+/node_modules/
+/web/node_modules/
+/web/dist/
+# internal/webui/dist is intentionally committed: go:embed needs it at build time.
+*.tsbuildinfo
+*.db
+*.db-wal
+*.db-shm
+# Local configuration can contain network details and must not be published.
+/config.yaml
+# Generated seed configuration.
+/config-seed.yaml
+/data/*.yaml
+*.bak.*
+/nfvis
+/benchmark/ingest/loadgen
+/result
+.DS_Store

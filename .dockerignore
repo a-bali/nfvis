@@ -1,0 +1,12 @@
+.git
+.github
+data
+config.yaml
+config-seed.yaml
+nfvis
+web/node_modules
+web/dist
+web/*.tsbuildinfo
+*.db
+*.db-wal
+*.db-shm

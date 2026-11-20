@@ -1,0 +1,42 @@
+# Default configuration. Settings may be omitted to use these defaults.
+listen:
+  udp: "0.0.0.0:2055"
+  http: "127.0.0.1:8080"
+
+database:
+  path: "data/nfvis.db"
+  batch_size: 1000
+  flush_interval: 250ms
+  retention:
+    raw: 720h              # 30 days
+    hourly: 8760h          # 1 year
+    cleanup_interval: 15m
+    cleanup_batch: 5000
+  # The hourly tier is implicit and uses retention.hourly.
+  resolution:
+    - bucket: 1m
+      retention: 168h
+    - bucket: 5m
+      retention: 720h
+
+decoder:
+  workers: 4
+  queue_size: 4096
+  template_ttl: 30m
+  max_packet_bytes: 65535
+  max_flows_per_packet: 10000
+
+dns:
+  enabled: true
+  cache_ttl: 5m
+  cache_size: 10000
+  lookup_timeout: 2s
+
+# Optional exporter interface labels, CIDR-to-VLAN rules and VLAN names.
+# Configure these for your own network; exported VLAN tags take precedence.
+exporters: []
+vlan_rules: []
+vlan_labels: {}
+
+logging:
+  level: info

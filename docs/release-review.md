@@ -1,0 +1,18 @@
+# Release review and outstanding risks
+
+Earlier independent read-only reviews covered ingestion/decoding/storage, configuration/API/CLI, and dashboard behavior. Subsequent changes require renewed validation. The following remain release risks or checks:
+
+- **Live traffic-accounting validation is outstanding:** the running collector reported persistent unknown-template sets and frequent apparent reboots while receiving a verified feed. A decoder change prevents sequence regression alone from clearing templates, but has not yet been validated against that feed or a known transfer. Previously discarded records cannot be recovered from nfvis.
+- **Release tag and working tree:** the existing `v0.1` tag predates the current uncommitted changes and does not match the workflow's `vMAJOR.MINOR.PATCH` requirement. Commit the intended release and use an appropriate immutable tag such as `v0.1.0` after validation.
+- **Historical DNS coverage is best effort:** names are captured asynchronously for new flows, subject to cache TTL, queue capacity, lookup failures and shutdown. Older flows are not backfilled. Host name searches scan stored observations rather than issuing DNS lookups; hourly observations can include names from outside a partial-hour selection.
+- **Flow sorting uses stored values:** source/destination sorting uses IP addresses, interface and VLAN sorting use numeric identifiers, and protocol sorting uses protocol numbers; displayed names are not sort keys. Sorting non-time columns may require scanning and sorting many retained flows.
+- **Release container and workflow need real integration validation:** this environment has no running Docker daemon and no configured GitHub remote. Neither multi-architecture container builds nor GHCR permissions/pushes have been exercised. Verify on GitHub before release.
+- **Exported records can double count traffic:** observed OPNsense physical-parent/VLAN overlap is an exporter/topology question; the collector intentionally sums reported flows without deduplication.
+- **Time-bounded traffic-tier backfill:** adding a new resolution fills it from retained raw data, not history already deleted by retention. Increasing retention for an existing resolution does not recover earlier history.
+- **One writer is assumed:** the app is a single-process collector. Running multiple collectors against the same database is unsupported, including concurrent startup/migrations/retention.
+- **No built-in authentication or TLS:** expose HTTP only to trusted clients or behind an authenticated TLS reverse proxy. Restrict UDP to trusted exporters at the network boundary.
+- **UI bundles are large:** Vite reports its >500 kB chunk warning. This is a performance concern, not a build failure.
+
+The review led to fixes for queued-flow shutdown loss, exporter packet ordering, uptime wrap timestamp conversion, online SQLite backup, nonzero HTTP startup failures, strict config keys, equivalent CIDR conflicts, missing resolution backfill, exporter-aware interface drill-down, and unknown protocol display. The recent-flow counters are process-local minute buckets and the processing metric is amortized database batch time, not end-to-end latency. Existing API range and retention limitations continue to apply.
+
+Required operational verification includes representative sustained/burst ingest with concurrent dashboard queries, a real OPNsense source, restore from a production-sized copied WAL database, upgrades and rollback on copied databases, browser testing across target viewports, and real GHCR image publication and startup. The independent review and tests are not proof that no other issues exist.
