@@ -116,6 +116,40 @@ type DNSConfig struct {
 	CacheTTL      Duration `yaml:"cache_ttl"`
 	CacheSize     int      `yaml:"cache_size"`
 	LookupTimeout Duration `yaml:"lookup_timeout"`
+	// Server is the resolver to send PTR queries to. Empty means the system
+	// resolver from /etc/resolv.conf.
+	Server string `yaml:"server"`
+}
+
+// defaultDNSPort is used when dns.server has no explicit port.
+const defaultDNSPort = 53
+
+// DNSDialAddress normalizes dns.server into a dialable "host:port" address.
+// It accepts an IP literal with an optional port: 192.0.2.53, 192.0.2.53:5353,
+// fd00::1, [fd00::1]:5353. An empty value means "use the system resolver" and
+// normalizes to an empty string.
+//
+// A literal IP is required: resolving a hostname would need the very resolver
+// being configured, and falling back to the system one would silently ignore
+// the setting.
+func DNSDialAddress(raw string) (string, error) {
+	s := strings.TrimSpace(raw)
+	if s == "" {
+		return "", nil
+	}
+	if addrPort, err := netip.ParseAddrPort(s); err == nil {
+		if addrPort.Port() == 0 {
+			return "", fmt.Errorf("%q: port 0 is not a usable DNS port", raw)
+		}
+		return addrPort.String(), nil
+	}
+	if strings.HasPrefix(s, "[") && strings.HasSuffix(s, "]") {
+		s = s[1 : len(s)-1]
+	}
+	if addr, err := netip.ParseAddr(s); err == nil {
+		return netip.AddrPortFrom(addr, defaultDNSPort).String(), nil
+	}
+	return "", fmt.Errorf("%q is not an IP address with an optional port (for example 192.0.2.53 or 192.0.2.53:5353)", raw)
 }
 
 // Exporter assigns labels to a source IP and its interface indexes.
@@ -285,6 +319,9 @@ func (c Config) Validate() error {
 	}
 	if c.DNS.LookupTimeout.Duration() < 100*time.Millisecond || c.DNS.LookupTimeout.Duration() > 30*time.Second {
 		return errors.New("dns.lookup_timeout must be between 100ms and 30s")
+	}
+	if _, err := DNSDialAddress(c.DNS.Server); err != nil {
+		return fmt.Errorf("dns.server: %w", err)
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Logging.Level)) {
 	case "debug", "info", "warn", "error":

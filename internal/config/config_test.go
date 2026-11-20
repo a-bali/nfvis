@@ -167,3 +167,61 @@ func TestResolutionTierDefaultsAndValidation(t *testing.T) {
 		t.Fatalf("tiers not sorted: %+v", tiers)
 	}
 }
+
+func TestDNSDialAddress(t *testing.T) {
+	cases := []struct{ in, want string }{
+		{"", ""},
+		{"   ", ""},
+		{"192.0.2.53", "192.0.2.53:53"},
+		{"192.0.2.53:5353", "192.0.2.53:5353"},
+		{"[fd00::1]:5353", "[fd00::1]:5353"},
+		{"fd00::1", "[fd00::1]:53"},
+		{" 10.0.0.1\t", "10.0.0.1:53"},
+	}
+	for _, c := range cases {
+		got, err := DNSDialAddress(c.in)
+		if err != nil {
+			t.Fatalf("DNSDialAddress(%q) error: %v", c.in, err)
+		}
+		if got != c.want {
+			t.Fatalf("DNSDialAddress(%q) = %q, want %q", c.in, got, c.want)
+		}
+	}
+	for _, bad := range []string{"dns.example.com", "192.0.2.53:0", "192.0.2.53:99999", "not an ip", "[fd00::1"} {
+		if got, err := DNSDialAddress(bad); err == nil {
+			t.Fatalf("DNSDialAddress(%q) = %q, want an error", bad, got)
+		}
+	}
+}
+
+func TestValidationAcceptsDNSServerAndRejectsBadOnes(t *testing.T) {
+	for _, server := range []string{"", "192.0.2.53", "192.0.2.53:5353", "[fd00::1]:5353"} {
+		c := Default()
+		c.DNS.Server = server
+		if err := c.Validate(); err != nil {
+			t.Fatalf("dns.server %q rejected: %v", server, err)
+		}
+	}
+	c := Default()
+	c.DNS.Server = "resolver.example.com"
+	if err := c.Validate(); err == nil || !strings.Contains(err.Error(), "dns.server") {
+		t.Fatalf("expected dns.server error, got %v", err)
+	}
+}
+
+func TestDNSServerLoadsFromYAML(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(path, []byte("dns:\n  server: 192.0.2.53:5353\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	c, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.DNS.Server != "192.0.2.53:5353" {
+		t.Fatalf("dns.server = %q", c.DNS.Server)
+	}
+	if !c.DNS.Enabled {
+		t.Fatal("setting dns.server must not disable reverse DNS")
+	}
+}

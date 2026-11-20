@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/balia/nfvis/internal/model"
+	"github.com/a-bali/nfvis/internal/model"
 )
 
 const (

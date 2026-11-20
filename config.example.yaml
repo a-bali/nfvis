@@ -31,6 +31,9 @@ dns:
   cache_ttl: 5m
   cache_size: 10000
   lookup_timeout: 2s
+  # Resolver for PTR lookups: an IP with an optional port. Default port is 53.
+  # Empty uses the system resolver from /etc/resolv.conf.
+  server: ""
 
 # Optional exporter interface labels, CIDR-to-VLAN rules and VLAN names.
 # Configure these for your own network; exported VLAN tags take precedence.

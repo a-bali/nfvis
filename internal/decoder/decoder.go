@@ -9,8 +9,8 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/balia/nfvis/internal/config"
-	"github.com/balia/nfvis/internal/model"
+	"github.com/a-bali/nfvis/internal/config"
+	"github.com/a-bali/nfvis/internal/model"
 )
 
 // Stats describes per-datagram decoder outcomes. Counters are accumulated by

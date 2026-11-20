@@ -13,10 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/balia/nfvis/internal/config"
-	"github.com/balia/nfvis/internal/ingest"
-	"github.com/balia/nfvis/internal/store"
-	"github.com/balia/nfvis/internal/webui"
+	"github.com/a-bali/nfvis/internal/config"
+	"github.com/a-bali/nfvis/internal/ingest"
+	"github.com/a-bali/nfvis/internal/store"
+	"github.com/a-bali/nfvis/internal/webui"
 )
 
 // timeseriesTimeout bounds a single chart request. Filtered charts return

@@ -11,7 +11,7 @@ import (
 	"os"
 	"time"
 
-	"github.com/balia/nfvis/internal/testutil"
+	"github.com/a-bali/nfvis/internal/testutil"
 )
 
 type healthCounters struct {

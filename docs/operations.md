@@ -59,6 +59,7 @@ Important knobs:
 | `dns.cache_ttl` | Reuse a cached lookup while it is younger than this. Default `5m`. |
 | `dns.cache_size` | Maximum cached addresses. Default `10000`. |
 | `dns.lookup_timeout` | Per-lookup timeout. Default `2s`. |
+| `dns.server` | Resolver for PTR queries: an IP with optional port (`192.0.2.53`, `192.0.2.53:5353`, `[fd00::1]:5353`), port 53 by default. Empty uses the system resolver from `/etc/resolv.conf`. A hostname is rejected, because resolving it would need the resolver being configured. Lookups go straight to this server (Go's resolver, `PreferGo`), so `/etc/resolv.conf` search domains and `ndots` do not apply. |
 | `exporters[].address` | UDP source IP of the device. Labels and interface names are keyed by this. |
 | `vlan_rules[]` | CIDR → VLAN mapping, scoped to `src`, `dst`, or `both`. Longest prefix wins; exported VLAN wins over rules. |
 | `vlan_labels` | Optional VLAN ID → display name mapping used by the VLAN tab. Unlabeled IDs show as `VLAN <id>`. |
@@ -131,6 +132,12 @@ Examples at 1,000 flows/s:
 Hourly aggregates are negligible by comparison. If disk is limited, reduce `retention.raw`; aggregates still preserve long-term traffic totals. Monitor `database.size_bytes` and `wal_bytes` from health.
 
 SQLite WAL files grow until checkpoints. A clean shutdown checkpoints the WAL. If the WAL grows without bound while running, verify retention sweeps are executing (`retention_raw_deleted`) and that the process is the only writer.
+
+## DNS and addresses
+
+`dns.server` pins the resolver used for PTR lookups. Leaving it empty keeps the host resolver from `/etc/resolv.conf`; setting it sends every query to that address instead, which is what you want when the collector runs in a container whose `/etc/resolv.conf` points at a stub resolver that cannot see your internal zones.
+
+The value must be a literal IP with an optional port (`192.0.2.53`, `192.0.2.53:5353`, `fd00::1`, `[fd00::1]:5353`); port 53 is assumed. A hostname is rejected at startup rather than resolved, because resolving it would need the resolver being configured. An unreachable server is not fatal: lookups time out, the negative result is cached for `dns.cache_ttl`, and `/api/v1/system` keeps counting unresolved endpoints while flows are stored unnamed. The System page shows the active server next to the cache statistics.
 
 ## Recovery
 

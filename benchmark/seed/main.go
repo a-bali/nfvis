@@ -33,10 +33,10 @@ import (
 	"gopkg.in/yaml.v3"
 	_ "modernc.org/sqlite"
 
-	"github.com/balia/nfvis/internal/config"
-	"github.com/balia/nfvis/internal/decoder"
-	"github.com/balia/nfvis/internal/model"
-	"github.com/balia/nfvis/internal/store"
+	"github.com/a-bali/nfvis/internal/config"
+	"github.com/a-bali/nfvis/internal/decoder"
+	"github.com/a-bali/nfvis/internal/model"
+	"github.com/a-bali/nfvis/internal/store"
 )
 
 const hourMS = int64(time.Hour / time.Millisecond)

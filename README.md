@@ -29,6 +29,14 @@ go build -o nfvis ./cmd/nfvis
 
 Open <http://127.0.0.1:8080>. Send NetFlow to UDP `0.0.0.0:2055`.
 
+To install the binary from the module instead of building a checkout:
+
+```bash
+go install github.com/a-bali/nfvis/cmd/nfvis@latest
+```
+
+The embedded dashboard is committed, so a module install needs no Node toolchain. Release tags are `vMAJOR.MINOR.PATCH`, matching `go install ...@vX.Y.Z`.
+
 If the dashboard assets are missing, the binary still builds but serves a placeholder page. Always run `npm run build` before the final `go build`.
 
 ## Sample data
@@ -83,6 +91,7 @@ Older windows may contain hourly aggregates after individual flows expire. Chart
 | Decode workers / queue | 4 / 4096 packets |
 | Template TTL | 30 minutes |
 | Auth / TLS | none (HTTP bound to loopback) |
+| DNS resolver | system resolver; set `dns.server` to pin one |
 
 ## Features
 

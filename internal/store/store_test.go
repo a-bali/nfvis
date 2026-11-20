@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/balia/nfvis/internal/config"
-	"github.com/balia/nfvis/internal/model"
+	"github.com/a-bali/nfvis/internal/config"
+	"github.com/a-bali/nfvis/internal/model"
 )
 
 func testStore(t *testing.T, raw, hourly time.Duration) (*Store, config.Config) {

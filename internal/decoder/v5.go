@@ -6,7 +6,7 @@ import (
 	"net/netip"
 	"time"
 
-	"github.com/balia/nfvis/internal/model"
+	"github.com/a-bali/nfvis/internal/model"
 	"github.com/netsampler/goflow2/v3/decoders/netflowlegacy"
 )
 

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/balia/nfvis/internal/config"
-	"github.com/balia/nfvis/internal/store"
+	"github.com/a-bali/nfvis/internal/config"
+	"github.com/a-bali/nfvis/internal/store"
 )
 
 func TestNormalizeCurveFillsGaps(t *testing.T) {

@@ -14,10 +14,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/balia/nfvis/internal/config"
-	"github.com/balia/nfvis/internal/decoder"
-	"github.com/balia/nfvis/internal/model"
-	"github.com/balia/nfvis/internal/store"
+	"github.com/a-bali/nfvis/internal/config"
+	"github.com/a-bali/nfvis/internal/decoder"
+	"github.com/a-bali/nfvis/internal/model"
+	"github.com/a-bali/nfvis/internal/store"
 )
 
 // Counters holds collector health counters and bounded, synchronized statistics.

@@ -4,7 +4,7 @@ import (
 	"net/netip"
 	"sort"
 
-	"github.com/balia/nfvis/internal/config"
+	"github.com/a-bali/nfvis/internal/config"
 )
 
 type vlanRule struct {

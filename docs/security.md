@@ -15,6 +15,7 @@ nfvis is a homelab observability tool, not a hardened multi-tenant service.
 - No credentials are created. There is no login endpoint.
 - The dashboard sends `X-Content-Type-Options: nosniff` for JSON and uses `no-cache` for embedded assets.
 - Backups are written with mode `0600`.
+- Reverse DNS uses the host resolver from `/etc/resolv.conf` unless `dns.server` names one explicitly. Every flow's endpoint addresses are sent to that resolver as PTR queries, so a misconfigured or hostile resolver learns which addresses you talk to.
 
 ## Network guidance
 

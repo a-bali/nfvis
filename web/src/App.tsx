@@ -1111,6 +1111,7 @@ export default function App() {
                   <Stat label="Cached entries" value={fmtNumber(system.dns.entries)} hint={`limit ${fmtNumber(system.dns.max_entries)}`} />
                   <Stat label="Cache TTL" value={fmtDays(system.dns.ttl_seconds)} />
                   <Stat label="Lookup timeout" value={`${system.dns.lookup_timeout_ms}ms`} />
+                  <Stat label="Server" value={system.dns.server || 'system resolver'} hint={system.dns.server ? 'configured dns.server' : 'from /etc/resolv.conf'} />
                   <Stat label="State" value={system.dns.enabled ? 'enabled' : 'disabled'} />
                   <Stat label="Queue" value={`${fmtNumber(system.dns.queue_depth)} / ${fmtNumber(system.dns.queue_capacity)}`} hint="flow jobs" />
                   <Stat label="Queue drops" value={fmtNumber(system.dns.dropped)} hint="flow jobs not enriched" />

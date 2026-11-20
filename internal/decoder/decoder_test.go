@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/balia/nfvis/internal/config"
-	"github.com/balia/nfvis/internal/testutil"
+	"github.com/a-bali/nfvis/internal/config"
+	"github.com/a-bali/nfvis/internal/testutil"
 )
 
 func testConfig() config.Config {

@@ -6,9 +6,10 @@ import (
 	"sync/atomic"
 	"time"
 
-	dnsresolver "github.com/balia/nfvis/internal/dns"
-	"github.com/balia/nfvis/internal/model"
-	"github.com/balia/nfvis/internal/store"
+	"github.com/a-bali/nfvis/internal/config"
+	dnsresolver "github.com/a-bali/nfvis/internal/dns"
+	"github.com/a-bali/nfvis/internal/model"
+	"github.com/a-bali/nfvis/internal/store"
 )
 
 type dnsJob struct {
@@ -34,6 +35,7 @@ type DNSStats struct {
 	MaxEntries      int     `json:"max_entries"`
 	TTLSeconds      int     `json:"ttl_seconds"`
 	LookupTimeoutMS int     `json:"lookup_timeout_ms"`
+	Server          string  `json:"server"`
 }
 type dnsWorker struct {
 	resolver                                                         *dnsresolver.Resolver
@@ -42,6 +44,7 @@ type dnsWorker struct {
 	dropped, completed, hits, misses, named, unresolved, errors, lag atomic.Uint64
 	maxLag                                                           atomic.Int64
 	timeout                                                          int
+	server                                                           string
 	ctx                                                              context.Context
 	cancel                                                           context.CancelFunc
 }
@@ -50,7 +53,14 @@ func (c *Collector) initDNS() {
 	if !c.cfg.DNS.Enabled {
 		return
 	}
-	d := &dnsWorker{resolver: dnsresolver.New(c.cfg.DNS.CacheTTL.Duration(), c.cfg.DNS.CacheSize, c.cfg.DNS.LookupTimeout.Duration()), jobs: make(chan dnsJob, c.cfg.Decoder.QueueSize), timeout: int(c.cfg.DNS.LookupTimeout.Duration().Milliseconds())}
+	server, err := config.DNSDialAddress(c.cfg.DNS.Server)
+	if err != nil {
+		// Validate() rejects this at startup; a Collector built directly in a
+		// test must not silently fall back to the system resolver.
+		c.log.Error("invalid dns.server, reverse DNS disabled", "server", c.cfg.DNS.Server, "error", err)
+		return
+	}
+	d := &dnsWorker{resolver: dnsresolver.NewWithServer(c.cfg.DNS.CacheTTL.Duration(), c.cfg.DNS.CacheSize, c.cfg.DNS.LookupTimeout.Duration(), server), jobs: make(chan dnsJob, c.cfg.Decoder.QueueSize), timeout: int(c.cfg.DNS.LookupTimeout.Duration().Milliseconds()), server: server}
 	d.ctx, d.cancel = context.WithCancel(context.Background())
 	c.dns = d
 	for i := 0; i < 8; i++ {
@@ -133,7 +143,7 @@ func (c *Collector) DNSStats() DNSStats {
 	if n > 0 {
 		avg = float64(d.lag.Load()) / float64(n)
 	}
-	return DNSStats{Enabled: true, QueueDepth: len(d.jobs), QueueCapacity: cap(d.jobs), Dropped: d.dropped.Load(), Completed: n, CacheHits: d.hits.Load(), CacheMisses: d.misses.Load(), Named: d.named.Load(), Unresolved: d.unresolved.Load(), Errors: d.errors.Load(), AvgLagMS: avg, MaxLagMS: d.maxLag.Load(), Entries: s.Entries, MaxEntries: s.MaxEntries, TTLSeconds: s.TTLSeconds, LookupTimeoutMS: d.timeout}
+	return DNSStats{Enabled: true, QueueDepth: len(d.jobs), QueueCapacity: cap(d.jobs), Dropped: d.dropped.Load(), Completed: n, CacheHits: d.hits.Load(), CacheMisses: d.misses.Load(), Named: d.named.Load(), Unresolved: d.unresolved.Load(), Errors: d.errors.Load(), AvgLagMS: avg, MaxLagMS: d.maxLag.Load(), Entries: s.Entries, MaxEntries: s.MaxEntries, TTLSeconds: s.TTLSeconds, LookupTimeoutMS: d.timeout, Server: d.server}
 }
 func (c *Collector) FlushDNS() int {
 	if c.dns == nil {

@@ -53,6 +53,33 @@ func New(ttl time.Duration, max int, timeout time.Duration) *Resolver {
 	return NewWithLookup(ttl, max, timeout, defaultLookup)
 }
 
+// NewWithServer is New with an explicit DNS server address ("host:port"). An
+// empty server keeps the host resolver, so a zero value behaves like New.
+func NewWithServer(ttl time.Duration, max int, timeout time.Duration, server string) *Resolver {
+	if server == "" {
+		return New(ttl, max, timeout)
+	}
+	return NewWithLookup(ttl, max, timeout, ServerLookup(server))
+}
+
+// ServerLookup returns a lookup function that resolves names through one
+// explicit DNS server instead of the host resolver from /etc/resolv.conf.
+//
+// Go's own resolver is used (PreferGo) so the query is a single PTR exchange
+// with that server; cgo's resolver would ignore the dialer.
+func ServerLookup(server string) LookupFunc {
+	dialer := &net.Dialer{}
+	resolver := &net.Resolver{
+		PreferGo: true,
+		Dial: func(ctx context.Context, network, _ string) (net.Conn, error) {
+			return dialer.DialContext(ctx, network, server)
+		},
+	}
+	return func(ctx context.Context, ip string) ([]string, error) {
+		return resolver.LookupAddr(ctx, ip)
+	}
+}
+
 // NewWithLookup is New with an injectable lookup function, primarily for tests.
 func NewWithLookup(ttl time.Duration, max int, timeout time.Duration, lookup LookupFunc) *Resolver {
 	if ttl <= 0 {

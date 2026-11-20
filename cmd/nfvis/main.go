@@ -17,11 +17,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/balia/nfvis/internal/api"
-	"github.com/balia/nfvis/internal/config"
-	"github.com/balia/nfvis/internal/decoder"
-	"github.com/balia/nfvis/internal/ingest"
-	"github.com/balia/nfvis/internal/store"
+	"github.com/a-bali/nfvis/internal/api"
+	"github.com/a-bali/nfvis/internal/config"
+	"github.com/a-bali/nfvis/internal/decoder"
+	"github.com/a-bali/nfvis/internal/ingest"
+	"github.com/a-bali/nfvis/internal/store"
 	"modernc.org/sqlite"
 )
 

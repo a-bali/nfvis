@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/balia/nfvis/internal/config"
+	"github.com/a-bali/nfvis/internal/config"
 	_ "modernc.org/sqlite"
 )
 

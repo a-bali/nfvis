@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/balia/nfvis/internal/testutil"
+	"github.com/a-bali/nfvis/internal/testutil"
 )
 
 var benchExporter = netip.MustParseAddr("192.0.2.1")

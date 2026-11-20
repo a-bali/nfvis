@@ -10,11 +10,11 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/balia/nfvis/internal/config"
-	"github.com/balia/nfvis/internal/decoder"
-	"github.com/balia/nfvis/internal/ingest"
-	"github.com/balia/nfvis/internal/store"
-	"github.com/balia/nfvis/internal/webui"
+	"github.com/a-bali/nfvis/internal/config"
+	"github.com/a-bali/nfvis/internal/decoder"
+	"github.com/a-bali/nfvis/internal/ingest"
+	"github.com/a-bali/nfvis/internal/store"
+	"github.com/a-bali/nfvis/internal/webui"
 )
 
 func TestEmbeddedDashboardAssets(t *testing.T) {

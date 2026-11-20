@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/balia/nfvis/internal/model"
+	"github.com/a-bali/nfvis/internal/model"
 )
 
 func protocolFlow(end time.Time, src, dst string, protocol uint8, bytes uint64) model.Flow {

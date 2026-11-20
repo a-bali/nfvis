@@ -1,4 +1,4 @@
-module github.com/balia/nfvis
+module github.com/a-bali/nfvis
 
 go 1.26.0
 
