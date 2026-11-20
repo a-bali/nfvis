@@ -320,7 +320,9 @@ function fmtDays(seconds: number): string {
   if (seconds < 3600) return `${Math.round(seconds / 60)}m`;
   if (seconds < 86400) return `${Math.round(seconds / 3600)}h`;
   const days = seconds / 86400;
-  return days < 10 ? days.toFixed(1) : String(Math.round(days));
+  // Whole days read as "1d", "30d"; fractional ones keep one decimal.
+  if (Number.isInteger(days)) return `${days}d`;
+  return days < 10 ? `${days.toFixed(1)}d` : `${Math.round(days)}d`;
 }
 
 function fmtUptime(seconds: number): string {
@@ -1143,7 +1145,7 @@ export default function App() {
                   <Stat label="Hourly rows" value={fmtNumber(system.database.hourly_aggregate_rows)} />
                   <Stat
                     label="Retention"
-                    value={`${Math.round(system.retention.raw_seconds / 86400)}d raw / ${Math.round(system.retention.hourly_seconds / 86400)}d hourly`}
+                    value={`${fmtDays(system.retention.raw_seconds)} raw / ${fmtDays(system.retention.hourly_seconds)} hourly`}
                     hint={`cleanup every ${fmtDays(system.retention.cleanup_interval_seconds)}`}
                   />
                 </div>
