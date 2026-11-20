@@ -182,7 +182,7 @@ func Default() Config {
 			Retention: RetentionConfig{
 				Raw:             Duration(30 * 24 * time.Hour),
 				Hourly:          Duration(365 * 24 * time.Hour),
-				CleanupInterval: Duration(15 * time.Minute),
+				CleanupInterval: Duration(time.Hour),
 				CleanupBatch:    5000,
 			},
 			Resolution: []ResolutionTier{

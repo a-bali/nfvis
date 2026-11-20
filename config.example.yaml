@@ -10,7 +10,7 @@ database:
   retention:
     raw: 720h              # 30 days
     hourly: 8760h          # 1 year
-    cleanup_interval: 15m
+    cleanup_interval: 1h
     cleanup_batch: 5000
   # The hourly tier is implicit and uses retention.hourly.
   resolution:

@@ -134,6 +134,11 @@ h1 { margin: 0; font-size: 26px; letter-spacing: -.02em; }
 .system-actions button { background: #16324a; color: #7dd3fc; border: 1px solid #275473; border-radius: 7px; padding: 7px 12px; font-size: 12px; }
 .system-actions button:hover:not(:disabled) { border-color: #38bdf8; }
 .system-actions button:disabled { opacity: .45; cursor: default; }
+.panel-head-right button { background: #16324a; color: #7dd3fc; border: 1px solid #275473; border-radius: 7px; padding: 6px 11px; font-size: 12px; }
+.panel-head-right button:hover:not(:disabled) { border-color: #38bdf8; }
+.panel-head-right button:disabled { opacity: .45; cursor: default; }
+.panel-note { color: #64748b; font-size: 11px; line-height: 1.5; margin: 12px 0 0; }
+.panel-note.error-note { color: #fca5a5; }
 
 .panel { background: #0f1623; border: 1px solid #1e293b; border-radius: 12px; padding: 16px; margin-bottom: 18px; }
 .panel.compact { padding: 4px 16px; }

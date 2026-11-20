@@ -44,15 +44,17 @@ type Counters struct {
 	DiskFullEvents      atomic.Uint64
 	RetentionRawDeleted atomic.Uint64
 	RetentionAggDeleted atomic.Uint64
-	TemplatesActive     atomic.Uint64
-	LastSuccessMS       atomic.Int64
-	LastFlowReceivedMS  atomic.Int64
-	Healthy             atomic.Bool
-	lastError           atomic.Value
-	metricsMu           sync.Mutex
-	recentFlows         [1441]flowMinute
-	processingSamples   []float64
-	processingNext      int
+	// RetentionTrafficDeleted counts agg_traffic rows removed by retention.
+	RetentionTrafficDeleted atomic.Uint64
+	TemplatesActive         atomic.Uint64
+	LastSuccessMS           atomic.Int64
+	LastFlowReceivedMS      atomic.Int64
+	Healthy                 atomic.Bool
+	lastError               atomic.Value
+	metricsMu               sync.Mutex
+	recentFlows             [1441]flowMinute
+	processingSamples       []float64
+	processingNext          int
 }
 
 type flowMinute struct {
@@ -98,39 +100,40 @@ func (c *Counters) recordProcessing(elapsed time.Duration, count int) {
 
 // Snapshot is the JSON representation of Counters.
 type Snapshot struct {
-	PacketsReceived     uint64   `json:"packets_received"`
-	PacketsDecoded      uint64   `json:"packets_decoded"`
-	PacketsMalformed    uint64   `json:"packets_malformed"`
-	PacketsUnsupported  uint64   `json:"packets_unsupported"`
-	PacketsOversized    uint64   `json:"packets_oversized"`
-	BytesReceived       uint64   `json:"bytes_received"`
-	FlowsDecoded        uint64   `json:"flows_decoded"`
-	FlowsStored         uint64   `json:"flows_stored"`
-	FlowsDropped        uint64   `json:"flows_dropped"`
-	UnknownTemplateSets uint64   `json:"unknown_template_sets"`
-	TemplateRefreshes   uint64   `json:"template_refreshes"`
-	TemplateExpirations uint64   `json:"template_expirations"`
-	ExporterReboots     uint64   `json:"exporter_reboots"`
-	TimestampWraps      uint64   `json:"timestamp_wraps"`
-	TimestampFallbacks  uint64   `json:"timestamp_fallbacks"`
-	SamplingOptions     uint64   `json:"sampling_options"`
-	UnknownFields       uint64   `json:"unknown_fields"`
-	UDPQueueDrops       uint64   `json:"udp_queue_drops"`
-	DBErrors            uint64   `json:"db_errors"`
-	DiskFullEvents      uint64   `json:"disk_full_events"`
-	RetentionRawDeleted uint64   `json:"retention_raw_deleted"`
-	RetentionAggDeleted uint64   `json:"retention_aggregate_deleted"`
-	TemplatesActive     uint64   `json:"templates_active"`
-	LastSuccessMS       int64    `json:"last_successful_insert_ms"`
-	LastFlowReceivedMS  int64    `json:"last_flow_received_ms"`
-	Healthy             bool     `json:"ingest_healthy"`
-	LastError           string   `json:"last_error,omitempty"`
-	Flows5Min           uint64   `json:"flows_5min"`
-	Flows1Hour          uint64   `json:"flows_1hour"`
-	Flows24Hour         uint64   `json:"flows_24hour"`
-	ProcessingAvgMS     *float64 `json:"processing_avg_ms"`
-	ProcessingMedianMS  *float64 `json:"processing_median_ms"`
-	ProcessingP90MS     *float64 `json:"processing_p90_ms"`
+	PacketsReceived         uint64   `json:"packets_received"`
+	PacketsDecoded          uint64   `json:"packets_decoded"`
+	PacketsMalformed        uint64   `json:"packets_malformed"`
+	PacketsUnsupported      uint64   `json:"packets_unsupported"`
+	PacketsOversized        uint64   `json:"packets_oversized"`
+	BytesReceived           uint64   `json:"bytes_received"`
+	FlowsDecoded            uint64   `json:"flows_decoded"`
+	FlowsStored             uint64   `json:"flows_stored"`
+	FlowsDropped            uint64   `json:"flows_dropped"`
+	UnknownTemplateSets     uint64   `json:"unknown_template_sets"`
+	TemplateRefreshes       uint64   `json:"template_refreshes"`
+	TemplateExpirations     uint64   `json:"template_expirations"`
+	ExporterReboots         uint64   `json:"exporter_reboots"`
+	TimestampWraps          uint64   `json:"timestamp_wraps"`
+	TimestampFallbacks      uint64   `json:"timestamp_fallbacks"`
+	SamplingOptions         uint64   `json:"sampling_options"`
+	UnknownFields           uint64   `json:"unknown_fields"`
+	UDPQueueDrops           uint64   `json:"udp_queue_drops"`
+	DBErrors                uint64   `json:"db_errors"`
+	DiskFullEvents          uint64   `json:"disk_full_events"`
+	RetentionRawDeleted     uint64   `json:"retention_raw_deleted"`
+	RetentionAggDeleted     uint64   `json:"retention_aggregate_deleted"`
+	RetentionTrafficDeleted uint64   `json:"retention_traffic_deleted"`
+	TemplatesActive         uint64   `json:"templates_active"`
+	LastSuccessMS           int64    `json:"last_successful_insert_ms"`
+	LastFlowReceivedMS      int64    `json:"last_flow_received_ms"`
+	Healthy                 bool     `json:"ingest_healthy"`
+	LastError               string   `json:"last_error,omitempty"`
+	Flows5Min               uint64   `json:"flows_5min"`
+	Flows1Hour              uint64   `json:"flows_1hour"`
+	Flows24Hour             uint64   `json:"flows_24hour"`
+	ProcessingAvgMS         *float64 `json:"processing_avg_ms"`
+	ProcessingMedianMS      *float64 `json:"processing_median_ms"`
+	ProcessingP90MS         *float64 `json:"processing_p90_ms"`
 }
 
 // Snapshot copies counters for the API.
@@ -148,7 +151,8 @@ func (c *Counters) Snapshot() Snapshot {
 		UDPQueueDrops: c.UDPQueueDrops.Load(),
 		DBErrors:      c.DBErrors.Load(), DiskFullEvents: c.DiskFullEvents.Load(),
 		RetentionRawDeleted: c.RetentionRawDeleted.Load(), RetentionAggDeleted: c.RetentionAggDeleted.Load(),
-		TemplatesActive: c.TemplatesActive.Load(), LastSuccessMS: c.LastSuccessMS.Load(), LastFlowReceivedMS: c.LastFlowReceivedMS.Load(),
+		RetentionTrafficDeleted: c.RetentionTrafficDeleted.Load(),
+		TemplatesActive:         c.TemplatesActive.Load(), LastSuccessMS: c.LastSuccessMS.Load(), LastFlowReceivedMS: c.LastFlowReceivedMS.Load(),
 		Healthy: c.Healthy.Load(),
 	}
 	c.metricsMu.Lock()
@@ -218,6 +222,14 @@ type Collector struct {
 	bufPool sync.Pool
 	started time.Time
 	dns     *dnsWorker
+
+	// Retention schedule and last-run state, read by the system endpoint and
+	// updated by the maintenance goroutine.
+	retentionMu       sync.Mutex
+	retention         RetentionState
+	pendingRetention  *retentionRequest
+	retentionQueue    chan *retentionRequest
+	retentionDebounce time.Duration
 }
 
 // New creates a collector. Start opens the UDP socket.
@@ -235,6 +247,10 @@ func New(cfg config.Config, dec decoder.Decoder, st *store.Store, counters *Coun
 		jobs:    jobs,
 		flows:   make(chan model.Flow, cfg.Decoder.QueueSize),
 		bufPool: sync.Pool{New: func() interface{} { return make([]byte, 65535) }},
+		// A manual sweep request never needs more than one slot; extra callers
+		// wait on the same pending request.
+		retentionQueue:    make(chan *retentionRequest, 1),
+		retentionDebounce: retentionManualDebounce,
 	}
 }
 
@@ -470,31 +486,62 @@ func (c *Collector) insertWithRetry(ctx context.Context, batch []model.Flow) err
 
 func (c *Collector) maintenanceLoop(ctx context.Context) {
 	defer c.wg.Done()
-	ticker := time.NewTicker(c.cfg.Database.Retention.CleanupInterval.Duration())
+	interval := c.cfg.Database.Retention.CleanupInterval.Duration()
+	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	c.runMaintenance(ctx)
+	// Mark the next scheduled run before the first sweep so the API can report
+	// a countdown even while the startup sweep is still running.
+	next := time.Now().Add(interval)
+	c.retentionMu.Lock()
+	c.retention.NextRunMS = next.UnixMilli()
+	c.retentionMu.Unlock()
+	c.runMaintenance(ctx, next)
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
-			c.runMaintenance(ctx)
+			next = time.Now().Add(interval)
+			c.runMaintenance(ctx, next)
+		case req := <-c.retentionQueue:
+			// A manual run replaces the pending schedule; the ticker keeps its
+			// own cadence so a burst of manual runs cannot postpone the next
+			// scheduled sweep.
+			next = time.Now().Add(interval)
+			c.runMaintenanceRequest(ctx, req, next)
 		}
 	}
 }
 
-func (c *Collector) runMaintenance(ctx context.Context) {
+// runMaintenance expires templates and sweeps retention, recording the outcome.
+func (c *Collector) runMaintenance(ctx context.Context, next time.Time) {
+	c.runMaintenanceRequest(ctx, nil, next)
+}
+
+func (c *Collector) runMaintenanceRequest(ctx context.Context, req *retentionRequest, next time.Time) {
 	expired := c.dec.ExpireTemplates(time.Now())
 	c.counters.TemplateExpirations.Add(uint64(expired))
 	c.counters.TemplatesActive.Store(uint64(c.dec.TemplateCount()))
-	res, err := c.store.SweepRetention(ctx, time.Now().UTC())
+
+	started := time.Now()
+	c.beginRetention(started, next)
+	res, err := c.store.SweepRetention(ctx, started.UTC())
+	finished := time.Now()
 	if err != nil {
 		c.log.Error("retention sweep failed", "error", err)
 		c.counters.setError(err)
+		c.endRetention(started, finished, 0, 0, 0, err)
 		return
 	}
 	c.counters.RetentionRawDeleted.Add(uint64(res.RawDeleted))
 	c.counters.RetentionAggDeleted.Add(uint64(res.AggregateDeleted))
+	c.counters.RetentionTrafficDeleted.Add(uint64(res.TrafficDeleted))
+	c.endRetention(started, finished, res.RawDeleted, res.AggregateDeleted, res.TrafficDeleted, nil)
+	if res.RawDeleted > 0 || res.AggregateDeleted > 0 || res.TrafficDeleted > 0 {
+		c.log.Debug("retention sweep removed rows",
+			"raw", res.RawDeleted, "aggregate", res.AggregateDeleted,
+			"traffic", res.TrafficDeleted, "elapsed", finished.Sub(started).String())
+	}
 }
 
 // Uptime returns how long the collector has been running.

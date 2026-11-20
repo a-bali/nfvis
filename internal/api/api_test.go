@@ -572,3 +572,111 @@ func seedNames(t *testing.T, st *store.Store, flows []model.Flow, names map[stri
 		}
 	}
 }
+
+// The system endpoint must expose the sweep schedule and last-run summary, and
+// the POST endpoint must run a sweep and report its result.
+func TestSystemRetentionStatusAndManualRun(t *testing.T) {
+	cfg := config.Default()
+	cfg.Database.Path = filepath.Join(t.TempDir(), "nfvis.db")
+	cfg.Listen.UDP = "127.0.0.1:0"
+	cfg.Listen.HTTP = "127.0.0.1:0"
+	cfg.DNS.Enabled = false
+	cfg.Database.Retention.Raw = config.Duration(time.Hour)
+	cfg.Database.Retention.CleanupInterval = config.Duration(time.Hour)
+	st, err := store.Open(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	now := time.Now().UTC()
+	if err := st.InsertBatch(context.Background(), []model.Flow{
+		{ReceivedAtMS: now.Add(-3 * time.Hour).UnixMilli(), EndMS: now.Add(-3 * time.Hour).UnixMilli(), TimeSource: "exported", Version: 5, Exporter: "192.0.2.1", ExporterIP: "192.0.2.1", SrcAddr: "10.0.0.1", DstAddr: "203.0.113.1", Bytes: 100, Packets: 1},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	coll := ingest.New(cfg, decoder.New(cfg), st, &ingest.Counters{}, slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := coll.Start(); err != nil {
+		t.Fatal(err)
+	}
+	defer coll.Stop()
+	ts := httptest.NewServer(New(cfg, st, coll, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-version").Handler())
+	defer ts.Close()
+
+	readSweep := func() map[string]interface{} {
+		t.Helper()
+		resp, err := http.Get(ts.URL + "/api/v1/system")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		var body map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+			t.Fatal(err)
+		}
+		sweep, ok := body["sweep"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("system response has no sweep object: %v", body)
+		}
+		return sweep
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	var sweep map[string]interface{}
+	for time.Now().Before(deadline) {
+		sweep = readSweep()
+		if sweep["runs"].(float64) > 0 && sweep["in_progress"] == false {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if got := sweep["runs"]; got != float64(1) {
+		t.Fatalf("runs = %v, want 1", got)
+	}
+	if got := sweep["last_raw_deleted"]; got != float64(1) {
+		t.Fatalf("last_raw_deleted = %v, want 1 (sweep %v)", got, sweep)
+	}
+	if got := sweep["interval_ms"]; got != float64(time.Hour.Milliseconds()) {
+		t.Fatalf("interval_ms = %v", got)
+	}
+	for _, key := range []string{"last_started_ms", "last_finished_ms", "last_duration_ms", "next_run_ms", "raw_deleted_total"} {
+		if _, ok := sweep[key]; !ok {
+			t.Fatalf("sweep is missing %q: %v", key, sweep)
+		}
+	}
+
+	// A manual run immediately after the startup sweep is folded into it: the
+	// request must still succeed and report the sweep that just ran.
+	post := func() map[string]interface{} {
+		t.Helper()
+		resp, err := http.Post(ts.URL+"/api/v1/system/retention", "application/json", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			t.Fatalf("POST retention status = %d", resp.StatusCode)
+		}
+		var result map[string]interface{}
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			t.Fatal(err)
+		}
+		ran, ok := result["sweep"].(map[string]interface{})
+		if !ok {
+			t.Fatalf("manual run response = %v", result)
+		}
+		return ran
+	}
+	if ran := post(); ran["runs"] != float64(1) {
+		t.Fatalf("debounced manual run reported runs = %v, want 1", ran["runs"])
+	}
+
+	// Past the debounce window the button must really sweep again.
+	time.Sleep(1100 * time.Millisecond)
+	ran := post()
+	if got := ran["runs"]; got != float64(2) {
+		t.Fatalf("runs after manual sweep = %v, want 2", got)
+	}
+	if got := ran["last_rows_deleted"]; got != float64(0) {
+		t.Fatalf("second sweep deleted %v rows", got)
+	}
+}

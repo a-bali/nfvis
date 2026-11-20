@@ -86,6 +86,7 @@ Older windows may contain hourly aggregates after individual flows expire. Chart
 | SQLite | `data/nfvis.db`, WAL, `synchronous=NORMAL` |
 | Raw flow retention | 30 days |
 | Hourly aggregate retention | 1 year |
+| Retention sweep | startup, then every hour |
 | Chart resolution tiers | 1 minute for 7 days, 5 minutes for 30 days |
 | Batch size / flush | 1000 flows / 250 ms |
 | Decode workers / queue | 4 / 4096 packets |

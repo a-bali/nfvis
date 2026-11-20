@@ -41,7 +41,27 @@ export type SystemStats = {
     hourly_seconds: number;
     cleanup_interval_seconds: number;
   };
+  sweep: {
+    in_progress: boolean;
+    last_started_ms: number;
+    last_finished_ms: number;
+    last_duration_ms: number;
+    last_rows_deleted: number;
+    last_raw_deleted: number;
+    last_aggregate_deleted: number;
+    last_traffic_deleted: number;
+    last_error?: string;
+    runs: number;
+    failures: number;
+    raw_deleted_total: number;
+    aggregate_deleted_total: number;
+    traffic_deleted_total: number;
+    interval_ms: number;
+    next_run_ms: number;
+  };
 };
+
+export type RetentionRunResult = { sweep: SystemStats['sweep'] };
 
 export type DNSFlushResult = {
   flushed: number;
@@ -221,6 +241,7 @@ export const api = {
   health: (signal?: AbortSignal) => get<Health>('/api/v1/health', signal),
   system: (signal?: AbortSignal) => get<SystemStats>('/api/v1/system', signal),
   flushDNSCache: () => post<DNSFlushResult>('/api/v1/system/dns/cache'),
+  runRetention: () => post<RetentionRunResult>('/api/v1/system/retention'),
   exporters: (signal?: AbortSignal) =>
     get<{ exporters: Exporter[] }>('/api/v1/exporters', signal),
   coverage: (signal?: AbortSignal) => get<Coverage>('/api/v1/coverage', signal),

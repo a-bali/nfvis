@@ -4,6 +4,7 @@ package api
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io/fs"
 	"log/slog"
@@ -48,6 +49,7 @@ func (a *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/health", a.health)
 	mux.HandleFunc("GET /api/v1/system", a.system)
 	mux.HandleFunc("POST /api/v1/system/dns/cache", a.flushDNSCache)
+	mux.HandleFunc("POST /api/v1/system/retention", a.runRetention)
 	mux.HandleFunc("GET /api/v1/coverage", a.coverage)
 	mux.HandleFunc("GET /api/v1/config", a.config)
 	mux.HandleFunc("GET /api/v1/exporters", a.exporters)
@@ -250,6 +252,7 @@ type systemResponse struct {
 		HourlySeconds          float64 `json:"hourly_seconds"`
 		CleanupIntervalSeconds float64 `json:"cleanup_interval_seconds"`
 	} `json:"retention"`
+	Sweep ingest.RetentionState `json:"sweep"`
 }
 
 type healthResponse struct {
@@ -312,7 +315,31 @@ func (a *Server) system(w http.ResponseWriter, r *http.Request) {
 	response.Retention.RawSeconds = time.Duration(a.cfg.Database.Retention.Raw).Seconds()
 	response.Retention.HourlySeconds = time.Duration(a.cfg.Database.Retention.Hourly).Seconds()
 	response.Retention.CleanupIntervalSeconds = time.Duration(a.cfg.Database.Retention.CleanupInterval).Seconds()
+	response.Sweep = a.collector.RetentionStatus()
 	writeJSON(w, http.StatusOK, response)
+}
+
+// retentionTriggerTimeout bounds how long a manual sweep request waits for the
+// sweep to finish before the caller is told it is still running.
+const retentionTriggerTimeout = 60 * time.Second
+
+// runRetention runs a retention sweep now instead of waiting for the ticker.
+func (a *Server) runRetention(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), retentionTriggerTimeout)
+	defer cancel()
+	state, err := a.collector.RunRetention(ctx)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		// The sweep keeps running; report the in-progress state rather than a
+		// failure, because nothing went wrong on the server side.
+		writeJSON(w, http.StatusAccepted, map[string]interface{}{"sweep": state})
+		return
+	}
+	if err != nil {
+		a.log.Error("manual retention sweep failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "retention", err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"sweep": state})
 }
 
 func (a *Server) flushDNSCache(w http.ResponseWriter, _ *http.Request) {

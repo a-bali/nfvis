@@ -50,6 +50,7 @@ Important knobs:
 | `database.flush_interval` | Maximum time a partial batch waits before being written. |
 | `database.retention.raw` | How long individual flows stay queryable. |
 | `database.retention.hourly` | How long hourly aggregates stay queryable. Must be at least raw. |
+| `database.retention.cleanup_interval` | How often expired rows are swept. Default `1h`; a sweep also runs at startup. |
 | `database.retention.cleanup_batch` | Rows deleted per retention statement; keeps sweeps short. |
 | `database.resolution` | Chart resolution tiers as `bucket`/`retention` pairs. Defaults: `1m` for `168h`, `5m` for `720h`. |
 | `decoder.workers` | Decode parallelism. Increase if UDP queue drops are reported. |

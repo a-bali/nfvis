@@ -338,6 +338,35 @@ function fmtDuration(ms: number): string {
   return `${Math.round(ms / 1000)}s`;
 }
 
+// fmtElapsed renders a short elapsed time with sub-second and millisecond
+// precision, for a sweep that often finishes in well under a second.
+function fmtElapsed(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '—';
+  if (ms < 1) return '<1ms';
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  if (ms < 60_000) return `${(ms / 1000).toFixed(ms < 10_000 ? 1 : 0)}s`;
+  const minutes = Math.floor(ms / 60_000);
+  const seconds = Math.round((ms % 60_000) / 1000);
+  return `${minutes}m ${seconds}s`;
+}
+
+// fmtAgo renders how long ago `ms` was, relative to now.
+function fmtAgo(now: number, ms: number): string {
+  const delta = now - ms;
+  if (!Number.isFinite(delta)) return '—';
+  if (delta < 0) return 'just now';
+  if (delta < 2000) return 'just now';
+  return `${fmtElapsed(delta)} ago`;
+}
+
+// fmtIn renders how long until `ms`, relative to now.
+function fmtIn(now: number, ms: number): string {
+  const delta = ms - now;
+  if (!Number.isFinite(delta)) return '—';
+  if (delta <= 0) return 'due now';
+  return `in ${fmtElapsed(delta)}`;
+}
+
 function protocolName(v: number): string {
   return PROTOCOLS[v] ?? String(v || '—');
 }
@@ -383,6 +412,7 @@ export default function App() {
   const [health, setHealth] = useState<Health | null>(null);
   const [system, setSystem] = useState<SystemStats | null>(null);
   const [flushingDNS, setFlushingDNS] = useState(false);
+  const [runningRetention, setRunningRetention] = useState(false);
   const [exporters, setExporters] = useState<Exporter[]>([]);
   const [timeseries, setTimeseries] = useState<Timeseries | null>(null);
   const [recentTraffic, setRecentTraffic] = useState<Timeseries[]>([]);
@@ -622,6 +652,22 @@ export default function App() {
       setError(err instanceof Error ? err.message : String(err));
     } finally {
       setFlushingDNS(false);
+    }
+  };
+
+  const runRetentionNow = async () => {
+    setRunningRetention(true);
+    setError('');
+    try {
+      await track(api.runRetention());
+      const s = await track(api.system());
+      setSystem(s);
+      setLastUpdated(new Date());
+      setNow(Date.now());
+    } catch (err) {
+      setError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setRunningRetention(false);
     }
   };
 
@@ -1101,6 +1147,58 @@ export default function App() {
                     hint={`cleanup every ${fmtDays(system.retention.cleanup_interval_seconds)}`}
                   />
                 </div>
+              </Panel>
+
+              <Panel
+                title="Retention cleanup"
+                subtitle={system.sweep.in_progress ? 'sweep running…' : `every ${fmtDays(system.sweep.interval_ms / 1000)}`}
+                action={(
+                  <button type="button" onClick={runRetentionNow} disabled={runningRetention || system.sweep.in_progress}>
+                    {runningRetention ? 'Running…' : system.sweep.in_progress ? 'Sweep in progress' : 'Run cleanup now'}
+                  </button>
+                )}
+              >
+                <div className="stat-grid">
+                  <Stat
+                    label="Last run"
+                    value={system.sweep.last_finished_ms ? `${fmtAgo(now, system.sweep.last_finished_ms)}` : 'not since start'}
+                    hint={system.sweep.last_finished_ms ? fmtTableTime(system.sweep.last_finished_ms) : 'a sweep runs at startup'}
+                  />
+                  <Stat
+                    label="Duration"
+                    value={system.sweep.last_finished_ms ? fmtElapsed(system.sweep.last_duration_ms) : '—'}
+                    hint="last completed sweep"
+                  />
+                  <Stat
+                    label="Rows deleted"
+                    value={system.sweep.last_finished_ms ? fmtNumber(system.sweep.last_rows_deleted) : '—'}
+                    hint={system.sweep.last_finished_ms
+                      ? `${fmtNumber(system.sweep.last_raw_deleted)} flows · ${fmtNumber(system.sweep.last_aggregate_deleted)} hourly · ${fmtNumber(system.sweep.last_traffic_deleted)} traffic`
+                      : 'flows · hourly · traffic tiers'}
+                  />
+                  <Stat
+                    label="Next run"
+                    value={system.sweep.next_run_ms ? fmtIn(now, system.sweep.next_run_ms) : '—'}
+                    hint={system.sweep.next_run_ms ? fmtTableTime(system.sweep.next_run_ms) : 'scheduled sweep'}
+                  />
+                  <Stat
+                    label="Runs / failures"
+                    value={`${fmtNumber(system.sweep.runs)} / ${fmtNumber(system.sweep.failures)}`}
+                    hint="since collector start"
+                  />
+                  <Stat
+                    label="Deleted since start"
+                    value={fmtNumber(system.sweep.raw_deleted_total + system.sweep.aggregate_deleted_total + system.sweep.traffic_deleted_total)}
+                    hint={`${fmtNumber(system.sweep.raw_deleted_total)} flows · ${fmtNumber(system.sweep.aggregate_deleted_total)} hourly · ${fmtNumber(system.sweep.traffic_deleted_total)} traffic`}
+                  />
+                </div>
+                {system.sweep.last_error && (
+                  <p className="panel-note error-note">Last sweep failed: {system.sweep.last_error}</p>
+                )}
+                <p className="panel-note">
+                  Rows are deleted for flows older than the raw retention, hourly aggregates and DNS history older than the hourly retention,
+                  and chart tiers older than their own retention. Deleted pages are reused by new data, so the database file does not shrink.
+                </p>
               </Panel>
 
               <Panel
