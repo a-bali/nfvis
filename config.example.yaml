@@ -7,6 +7,10 @@ database:
   path: "data/nfvis.db"
   batch_size: 1000
   flush_interval: 250ms
+  # Startup schema-migration budget. Indexing a multi-GB flows table takes
+  # minutes, and exceeding this rolls the migration back and exits before the
+  # service serves. Default 30m; raise it for a very large existing database.
+  migration_timeout: 30m
   # Duplicate suppression. Both mechanisms are inert until you declare the
   # topology they exploit: a matching payload alone is not evidence that two
   # records describe the same packet, so with nothing configured every record is

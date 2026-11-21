@@ -48,6 +48,7 @@ Important knobs:
 | `listen.http` | HTTP bind address. Keep `127.0.0.1:8080` unless a proxy handles access control. |
 | `database.batch_size` | Flows per write transaction. Higher improves throughput and increases flush latency. |
 | `database.flush_interval` | Maximum time a partial batch waits before being written. |
+| `database.migration_timeout` | Startup budget for schema migrations. Default `30m`. Migrations that index or rewrite a large existing table take minutes; exceeding the budget rolls back, exits before serving, and crash-loops the workload. Raise it for a multi-GB database. |
 | `database.retention.raw` | How long individual flows stay queryable. |
 | `database.retention.hourly` | How long hourly aggregates stay queryable. Must be at least raw. |
 | `database.retention.cleanup_interval` | How often expired rows are swept. Default `1h`; a sweep also runs at startup. |

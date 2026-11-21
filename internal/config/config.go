@@ -73,9 +73,28 @@ type DatabaseConfig struct {
 	Flush      Duration         `yaml:"flush_interval"`
 	Retention  RetentionConfig  `yaml:"retention"`
 	Resolution []ResolutionTier `yaml:"resolution"`
+	// MigrationTimeout bounds how long schema migrations may run at startup.
+	// A migration that rewrites or indexes a large existing table takes minutes
+	// on a multi-GB database, so this cannot be a small fixed value: exceeding
+	// it rolls the migration back, the process exits before serving, and a
+	// crash-looping pod is a full outage. Zero uses DefaultMigrationTimeout.
+	MigrationTimeout Duration `yaml:"migration_timeout"`
 	// Dedup collapses records OPNsense's ng_netflow emits more than once for the
 	// same packet.
 	Dedup DedupConfig `yaml:"dedup"`
+}
+
+// DefaultMigrationTimeout is the ceiling for the whole migration run when
+// database.migration_timeout is unset. Migrations are one-time work at startup;
+// waiting is far cheaper than rolling back and crash-looping.
+const DefaultMigrationTimeout = 30 * time.Minute
+
+// EffectiveMigrationTimeout returns the configured timeout or the default.
+func (d DatabaseConfig) EffectiveMigrationTimeout() time.Duration {
+	if d.MigrationTimeout.Duration() > 0 {
+		return d.MigrationTimeout.Duration()
+	}
+	return DefaultMigrationTimeout
 }
 
 // DedupConfig controls duplicate record suppression.
@@ -254,6 +273,7 @@ func Default() Config {
 				{Bucket: Duration(time.Minute), Retention: Duration(7 * 24 * time.Hour)},
 				{Bucket: Duration(5 * time.Minute), Retention: Duration(30 * 24 * time.Hour)},
 			},
+			MigrationTimeout: Duration(DefaultMigrationTimeout),
 			Dedup: DedupConfig{
 				// Both mechanisms need declared topology; off until the operator
 				// supplies it, so the default is lossless.
@@ -324,6 +344,9 @@ func (c Config) Validate() error {
 	}
 	if c.Database.Flush.Duration() <= 0 || c.Database.Flush.Duration() > time.Minute {
 		return errors.New("database.flush_interval must be between 0 and 1m")
+	}
+	if d := c.Database.MigrationTimeout.Duration(); d < 0 || (d > 0 && d < 5*time.Second) || d > 4*time.Hour {
+		return errors.New("database.migration_timeout must be 0 (default) or between 5s and 4h")
 	}
 	r := c.Database.Retention
 	if r.Raw.Duration() <= 0 || r.Hourly.Duration() <= 0 {

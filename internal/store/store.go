@@ -94,13 +94,19 @@ func Open(cfg config.Config) (*Store, error) {
 	db.SetMaxIdleConns(8)
 	db.SetConnMaxLifetime(0)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := db.PingContext(ctx); err != nil {
+	pingCtx, cancelPing := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancelPing()
+	if err := db.PingContext(pingCtx); err != nil {
 		_ = db.Close()
 		return nil, fmt.Errorf("ping sqlite: %w", err)
 	}
-	if err := migrate(ctx, db); err != nil {
+	// Migrations are one-time startup work whose cost scales with the existing
+	// data, not with a request budget: indexing an 11M-row table takes minutes.
+	// The timeout is configurable (database.migration_timeout) with a generous
+	// default, because exceeding it rolls back and exits before serving.
+	migrateCtx, cancelMigrate := context.WithTimeout(context.Background(), cfg.Database.EffectiveMigrationTimeout())
+	defer cancelMigrate()
+	if err := migrate(migrateCtx, db); err != nil {
 		_ = db.Close()
 		return nil, err
 	}
