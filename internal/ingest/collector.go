@@ -30,6 +30,7 @@ type Counters struct {
 	BytesReceived       atomic.Uint64
 	FlowsDecoded        atomic.Uint64
 	FlowsStored         atomic.Uint64
+	FlowsDuplicates     atomic.Uint64
 	FlowsDropped        atomic.Uint64
 	UnknownTemplateSets atomic.Uint64
 	TemplateRefreshes   atomic.Uint64
@@ -108,6 +109,7 @@ type Snapshot struct {
 	BytesReceived           uint64   `json:"bytes_received"`
 	FlowsDecoded            uint64   `json:"flows_decoded"`
 	FlowsStored             uint64   `json:"flows_stored"`
+	FlowsDuplicates         uint64   `json:"flows_duplicates"`
 	FlowsDropped            uint64   `json:"flows_dropped"`
 	UnknownTemplateSets     uint64   `json:"unknown_template_sets"`
 	TemplateRefreshes       uint64   `json:"template_refreshes"`
@@ -143,7 +145,8 @@ func (c *Counters) Snapshot() Snapshot {
 		PacketsMalformed: c.PacketsMalformed.Load(), PacketsUnsupported: c.PacketsUnsupported.Load(),
 		PacketsOversized: c.PacketsOversized.Load(), BytesReceived: c.BytesReceived.Load(),
 		FlowsDecoded: c.FlowsDecoded.Load(), FlowsStored: c.FlowsStored.Load(),
-		FlowsDropped: c.FlowsDropped.Load(), UnknownTemplateSets: c.UnknownTemplateSets.Load(),
+		FlowsDuplicates: c.FlowsDuplicates.Load(),
+		FlowsDropped:    c.FlowsDropped.Load(), UnknownTemplateSets: c.UnknownTemplateSets.Load(),
 		TemplateRefreshes: c.TemplateRefreshes.Load(), TemplateExpirations: c.TemplateExpirations.Load(),
 		ExporterReboots: c.ExporterReboots.Load(),
 		TimestampWraps:  c.TimestampWraps.Load(), TimestampFallbacks: c.TimestampFallbacks.Load(),
@@ -462,11 +465,18 @@ func (c *Collector) batchLoop(ctx context.Context) {
 func (c *Collector) insertWithRetry(ctx context.Context, batch []model.Flow) error {
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		var ids []int64
-		ids, err = c.store.InsertBatchIDs(ctx, batch)
+		var res store.InsertResult
+		res, err = c.store.InsertBatchResult(ctx, batch)
 		if err == nil {
-			c.queueDNS(ids, batch)
-			c.counters.FlowsStored.Add(uint64(len(batch)))
+			// A batch is not always fully written: duplicate suppression merges the
+			// redundant copies. res.IDs is positional against batch, so the row a
+			// record ended up in is known exactly — a merged record must be looked
+			// up against the row that absorbed it, never against a neighbour's.
+			c.queueDNS(res.IDs, batch)
+			c.counters.FlowsStored.Add(uint64(res.NewRows))
+			if res.Merged > 0 {
+				c.counters.FlowsDuplicates.Add(uint64(res.Merged))
+			}
 			c.counters.LastSuccessMS.Store(time.Now().UnixMilli())
 			c.counters.Healthy.Store(true)
 			return nil

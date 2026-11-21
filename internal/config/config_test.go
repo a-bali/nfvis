@@ -46,6 +46,15 @@ func TestExampleMatchesDefaults(t *testing.T) {
 	if len(got.VLANRules) == 0 {
 		got.VLANRules = nil
 	}
+	if len(got.Database.Dedup.NAT.WANAddresses) == 0 {
+		got.Database.Dedup.NAT.WANAddresses = nil
+	}
+	if len(got.Database.Dedup.ParentChildLinks) == 0 {
+		got.Database.Dedup.ParentChildLinks = nil
+	}
+	if len(got.Database.Dedup.NAT.Exporters) == 0 {
+		got.Database.Dedup.NAT.Exporters = nil
+	}
 	if want := Default(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("example differs from defaults:\n got: %+v\nwant: %+v", got, want)
 	}

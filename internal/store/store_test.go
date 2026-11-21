@@ -761,7 +761,7 @@ func TestCoverageReportsTierAvailability(t *testing.T) {
 
 func TestMigrationAddsTrafficTable(t *testing.T) {
 	st, cfg := testStore(t, 24*time.Hour, 72*time.Hour)
-	if _, err := st.DB().Exec(`DROP TABLE dns_host_history; ALTER TABLE flows DROP COLUMN src_name; ALTER TABLE flows DROP COLUMN dst_name; ALTER TABLE flows DROP COLUMN src_dns_ms; ALTER TABLE flows DROP COLUMN dst_dns_ms`); err != nil {
+	if _, err := st.DB().Exec(`DROP TABLE dns_host_history; ALTER TABLE flows DROP COLUMN src_name; ALTER TABLE flows DROP COLUMN dst_name; ALTER TABLE flows DROP COLUMN src_dns_ms; ALTER TABLE flows DROP COLUMN dst_dns_ms; DROP INDEX IF EXISTS idx_flows_dedup_key_lookup; DROP INDEX IF EXISTS idx_flows_dedup_key; ALTER TABLE flows DROP COLUMN dedup_key`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.DB().Exec(`DELETE FROM schema_migrations WHERE version >= 2`); err != nil {
@@ -804,7 +804,7 @@ func TestBackfillSeedsTiersOnUpgrade(t *testing.T) {
 	if _, err := st.DB().Exec(`DELETE FROM agg_traffic`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`DROP TABLE dns_host_history; ALTER TABLE flows DROP COLUMN src_name; ALTER TABLE flows DROP COLUMN dst_name; ALTER TABLE flows DROP COLUMN src_dns_ms; ALTER TABLE flows DROP COLUMN dst_dns_ms`); err != nil {
+	if _, err := st.DB().Exec(`DROP TABLE dns_host_history; ALTER TABLE flows DROP COLUMN src_name; ALTER TABLE flows DROP COLUMN dst_name; ALTER TABLE flows DROP COLUMN src_dns_ms; ALTER TABLE flows DROP COLUMN dst_dns_ms; DROP INDEX IF EXISTS idx_flows_dedup_key_lookup; DROP INDEX IF EXISTS idx_flows_dedup_key; ALTER TABLE flows DROP COLUMN dedup_key`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.DB().Exec(`DELETE FROM schema_migrations WHERE version >= 2`); err != nil {

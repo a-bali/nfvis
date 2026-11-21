@@ -120,17 +120,36 @@ func (c *Collector) initDNS() {
 		}()
 	}
 }
-func (c *Collector) queueDNS(ids []int64, flows []model.Flow) {
+
+// queueDNS enqueues one lookup job per stored row, pairing each row id with the
+// record that produced it. ids is positional against flows (see
+// store.InsertResult), so a merged record's lookup is attached to the row that
+// absorbed it instead of shifting every later record onto its neighbour's row.
+// It returns the number of distinct rows that were enqueued.
+func (c *Collector) queueDNS(ids []int64, flows []model.Flow) int {
 	if c.dns == nil {
-		return
+		return 0
 	}
+	if len(ids) != len(flows) {
+		// A caller that cannot pair the two must not guess: a lookup written
+		// against the wrong row persists a foreign hostname on it.
+		c.log.Warn("DNS queue skipped: row ids do not align with the batch",
+			"ids", len(ids), "flows", len(flows))
+		return 0
+	}
+	queued := 0
 	for i, id := range ids {
+		if id == 0 {
+			continue
+		}
+		queued++
 		select {
 		case c.dns.jobs <- dnsJob{id, flows[i]}:
 		default:
 			c.dns.dropped.Add(1)
 		}
 	}
+	return queued
 }
 func (c *Collector) DNSStats() DNSStats {
 	d := c.dns

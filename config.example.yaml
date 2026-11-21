@@ -7,6 +7,29 @@ database:
   path: "data/nfvis.db"
   batch_size: 1000
   flush_interval: 250ms
+  # Duplicate suppression. Both mechanisms are inert until you declare the
+  # topology they exploit: a matching payload alone is not evidence that two
+  # records describe the same packet, so with nothing configured every record is
+  # stored. See docs/operations.md before enabling either.
+  dedup:
+    # Collapse the per-interface copies of one frame. Requires
+    # parent_child_links: the exporter and the interface pairs that may
+    # collapse. The parent record survives.
+    parent_child: false
+    parent_child_links: []
+    #   - exporter: "192.168.1.1"
+    #     parent: 2
+    #     child: 7
+    # Drop the post-NAT copy of a forwarded packet when its pre-NAT mate is
+    # seen. Requires wan_addresses (the firewall's own NAT-boundary addresses)
+    # and an exporters entry naming the input interface of each view.
+    nat:
+      wan_addresses: []
+      exporters: []
+      # - address: "192.168.1.1"
+      #   pre_interface: 2
+      #   post_interface: 7
+      window: 2s
   retention:
     raw: 720h              # 30 days
     hourly: 8760h          # 1 year

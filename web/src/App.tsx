@@ -1237,6 +1237,7 @@ export default function App() {
                   <Stat label="Unsupported packets" value={fmtNumber(systemNum('packets_unsupported'))} />
                   <Stat label="Flows decoded" value={fmtNumber(systemNum('flows_decoded'))} />
                   <Stat label="Flows stored" value={fmtNumber(systemNum('flows_stored'))} />
+                  <Stat label="Flows deduplicated" value={fmtNumber(systemNum('flows_duplicates'))} />
                   <Stat label="Flows dropped" value={fmtNumber(systemNum('flows_dropped'))} />
                   <Stat label="UDP queue drops" value={fmtNumber(systemNum('udp_queue_drops'))} />
                   <Stat label="DB errors" value={fmtNumber(systemNum('db_errors'))} />
