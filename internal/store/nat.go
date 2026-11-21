@@ -100,9 +100,6 @@ func (s *Store) findStoredMate(ctx context.Context, tx *sql.Tx, f *model.Flow) (
 			continue
 		}
 		fl.Exporter = f.Exporter
-		if !s.nat.sameInterfaceNode(fl.InputIf, f.InputIf) {
-			continue
-		}
 		m.flow = *fl
 		return &m, nil
 	}
@@ -110,13 +107,6 @@ func (s *Store) findStoredMate(ctx context.Context, tx *sql.Tx, f *model.Flow) (
 		return nil, fmt.Errorf("nat mate rows: %w", err)
 	}
 	return nil, nil
-}
-
-// sameInterfaceNode reports whether two records came from the same interface
-// node. The two NAT views of one packet are emitted by one node; a record from a
-// different interface is a different traversal and must not be paired.
-func (n *natState) sameInterfaceNode(a, b uint32) bool {
-	return a == b
 }
 
 // dropPostNATMate reports whether f is the post-NAT view of an already stored

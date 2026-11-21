@@ -45,7 +45,7 @@ func TestParentChildDuplicateCollapsesThroughTheCollector(t *testing.T) {
 	src, dst := testutil.DefaultV4Src(), testutil.DefaultV4Dst()
 	parent := testutil.V5Field{
 		SrcAddr: src, DstAddr: dst, Input: 2, Output: 1,
-		Packets: 1, Bytes: 98, Proto: 1, First: 1000, Last: 2000,
+		Packets: 1, Bytes: 84, Proto: 1, First: 1000, Last: 2000,
 	}
 	child := parent
 	child.Input = 7
@@ -101,8 +101,8 @@ func TestParentChildDuplicateCollapsesThroughTheCollector(t *testing.T) {
 	if err := st.DB().QueryRowContext(context.Background(), `SELECT packets, bytes FROM flows`).Scan(&packets, &bytes); err != nil {
 		t.Fatal(err)
 	}
-	if packets != 1 || bytes != 98 {
-		t.Fatalf("survivor counters = %d packets / %d bytes, want 1/98", packets, bytes)
+	if packets != 1 || bytes != 84 {
+		t.Fatalf("survivor counters = %d packets / %d bytes, want 1/84", packets, bytes)
 	}
 	// One traversal, counted once.
 	var aggFlows int64

@@ -61,12 +61,28 @@ func flowDedupKey(f *model.Flow) []byte {
 // prefersInput reports whether a record on ifIndex should replace a stored
 // duplicate on storedIndex.
 //
-// The parent interface carries the lower ifIndex in every OPNsense topology
-// pair observed in production — (2,1)/(7,1), (2,1)/(13,1), (2,2)/(10,2),
-// (2,3)/(13,3) — and the surviving record measured for a ping is the parent's
-// (in=2). Surviving on the lower ifIndex therefore keeps the record that holds
-// the pre-NAT source identity, and it makes the outcome independent of which
-// copy the exporter happened to send first.
+// The surviving record is the one on the smallest non-zero input interface.
+// OPNsense numbers interfaces in creation order, so a parent precedes its
+// sub-interfaces (measured pairs: 2+7, 2+13, 2+10, 2+11, 2+12), and keeping the
+// parent preserves the pre-NAT source identity that the ping fixture shows
+// surviving. It also makes the outcome independent of arrival order.
+//
+// ifIndex 0 means "not recorded", not "the most parent interface": a plain
+// minimum would pick it and attribute the traffic to an unknown interface, which
+// happens in 1,208 duplicate groups an hour on the measured exporter.
+//
+// When neither side has an input interface there is nothing to prefer, so the
+// first stored copy is kept: no tie-break among equal interfaces is needed (no
+// group in the measured hour had two records on the same input_if).
 func prefersInput(ifIndex, storedIndex uint32) bool {
-	return ifIndex < storedIndex
+	switch {
+	case ifIndex == 0 && storedIndex == 0:
+		return false
+	case ifIndex == 0:
+		return false
+	case storedIndex == 0:
+		return true
+	default:
+		return ifIndex < storedIndex
+	}
 }

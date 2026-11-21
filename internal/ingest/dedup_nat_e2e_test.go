@@ -45,7 +45,7 @@ func TestCombinedDedupThroughTheCollector(t *testing.T) {
 	wan := [4]byte{192, 168, 0, 2}
 	dst := testutil.DefaultV4Dst()
 	parent := testutil.V5Field{SrcAddr: inner, DstAddr: dst, Input: 2, Output: 1,
-		Packets: 1, Bytes: 98, Proto: 1, First: 1000, Last: 2000}
+		Packets: 1, Bytes: 84, Proto: 1, First: 1000, Last: 2000}
 	child := parent
 	child.Input = 7
 	postNAT := parent
@@ -105,8 +105,8 @@ func TestCombinedDedupThroughTheCollector(t *testing.T) {
 	if err := st.DB().QueryRowContext(context.Background(), `SELECT COALESCE(SUM(bytes),0), COALESCE(SUM(flows),0) FROM agg_exporter`).Scan(&aggBytes, &aggFlows); err != nil {
 		t.Fatal(err)
 	}
-	if aggBytes != 98 || aggFlows != 1 {
-		t.Fatalf("agg_exporter = %d bytes / %d flows, want 98/1", aggBytes, aggFlows)
+	if aggBytes != 84 || aggFlows != 1 {
+		t.Fatalf("agg_exporter = %d bytes / %d flows, want 84/1", aggBytes, aggFlows)
 	}
 	var wanSource int64
 	if err := st.DB().QueryRowContext(context.Background(), `SELECT COALESCE(SUM(flows),0) FROM agg_host WHERE host = ?`, wanSrc).Scan(&wanSource); err != nil {

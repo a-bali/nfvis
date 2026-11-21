@@ -41,8 +41,12 @@ func preNATRecord(end time.Time) model.Flow {
 	return f
 }
 
+// postNATRecord is the measured post-NAT view: same counters and destination,
+// source rewritten to the WAN address, exported inside the window. It is on
+// input node 7 in the production capture, which is why nothing may key on the
+// interface when pairing the two views.
 func postNATRecord(end time.Time) model.Flow {
-	f := pingRecord(end.Add(700*time.Millisecond), 2, natWANSrc, 64512)
+	f := pingRecord(end.Add(700*time.Millisecond), 7, natWANSrc, 0)
 	return f
 }
 
@@ -83,7 +87,7 @@ func TestPostNATCopyCollapsesWhenItArrivesFirst(t *testing.T) {
 		t.Fatalf("survivor src = %s, want the pre-NAT %s", got[0].SrcAddr, natInnerSrc)
 	}
 	// Interfaces and counters follow the surviving record.
-	if got[0].Bytes != 98 || got[0].Packets != 1 {
+	if got[0].Bytes != 84 || got[0].Packets != 1 {
 		t.Fatalf("survivor counters = %d/%d", got[0].Bytes, got[0].Packets)
 	}
 }
@@ -149,7 +153,7 @@ func TestCombinedDedupLeavesOnePreNATParentRecord(t *testing.T) {
 	if f.SrcAddr != natInnerSrc || f.DstAddr != "146.110.3.12" {
 		t.Fatalf("survivor endpoints = %s -> %s", f.SrcAddr, f.DstAddr)
 	}
-	if f.Bytes != 98 || f.Packets != 1 || f.Protocol != 1 {
+	if f.Bytes != 84 || f.Packets != 1 || f.Protocol != 1 {
 		t.Fatalf("survivor payload = %d bytes / %d packets / proto %d", f.Bytes, f.Packets, f.Protocol)
 	}
 	// Aggregates must count the one surviving traversal, exactly once.
@@ -157,8 +161,8 @@ func TestCombinedDedupLeavesOnePreNATParentRecord(t *testing.T) {
 	if err := st.DB().QueryRow(`SELECT SUM(bytes), SUM(packets), SUM(flows) FROM agg_exporter`).Scan(&bytes, &packets, &flows); err != nil {
 		t.Fatalf("read agg_exporter: %v", err)
 	}
-	if bytes != 98 || packets != 1 || flows != 1 {
-		t.Fatalf("agg_exporter = %d bytes / %d packets / %d flows, want 98/1/1", bytes, packets, flows)
+	if bytes != 84 || packets != 1 || flows != 1 {
+		t.Fatalf("agg_exporter = %d bytes / %d packets / %d flows, want 84/1/1", bytes, packets, flows)
 	}
 }
 

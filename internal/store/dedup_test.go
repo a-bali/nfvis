@@ -12,8 +12,10 @@ import (
 // ng_netflow exports it: once on the parent interface, once on the VLAN child
 // interface, and once more after NAT/PAT rewrote the source.
 //
-// The values are the ones measured on the production exporter; the three
-// records are the fixture every dedup assertion is checked against.
+// Field values are the measured production ones (nfcapd.202611201545, exporter
+// 192.168.1.1): ICMP carries no L4 ports, so both are 0 — nfdump renders the
+// ICMP type in that column, but the record itself has no port and a fixture that
+// invented one would not match production.
 func pingRecord(end time.Time, inputIf uint32, src string, srcPort uint16) model.Flow {
 	return model.Flow{
 		ReceivedAtMS:   end.UnixMilli() + 20,
@@ -33,7 +35,7 @@ func pingRecord(end time.Time, inputIf uint32, src string, srcPort uint16) model
 		SrcPort:        srcPort,
 		DstPort:        0, // ICMP echo: no ports
 		Protocol:       1, // ICMP
-		Bytes:          98,
+		Bytes:          84,
 		Packets:        1,
 		SrcVLAN:        -1,
 		DstVLAN:        -1,
@@ -42,13 +44,20 @@ func pingRecord(end time.Time, inputIf uint32, src string, srcPort uint16) model
 	}
 }
 
-// pingRecords returns the measured three-record export of one ping: parent
-// (input_if 2), VLAN child (input_if 7), and the post-NAT copy.
+// pingRecords returns the measured three-record export of one ping, all with the
+// same start/end timestamp:
+//
+//	R1 parent, pre-NAT   in=2 out=1  10.10.10.194
+//	R2 post-NAT          in=7 out=1  192.168.0.2
+//	R3 child, pre-NAT    in=7 out=1  10.10.10.194
+//
+// R1 and R3 share a fingerprint (they differ only in interfaces); R2 differs in
+// source address and so is M2's business, not M1's.
 func pingRecords(end time.Time) []model.Flow {
 	return []model.Flow{
 		pingRecord(end, 2, "10.10.10.194", 0),
+		pingRecord(end, 7, "192.168.0.2", 0),
 		pingRecord(end, 7, "10.10.10.194", 0),
-		pingRecord(end, 2, "192.168.0.2", 41234),
 	}
 }
 
@@ -95,12 +104,11 @@ func TestParentChildDuplicatesCollapseToParent(t *testing.T) {
 	if parent.SrcAddr != "10.10.10.194" || parent.DstAddr != "146.110.3.12" {
 		t.Fatalf("survivor endpoints = %s -> %s", parent.SrcAddr, parent.DstAddr)
 	}
-	if parent.Bytes != 98 || parent.Packets != 1 || parent.Protocol != 1 {
+	if parent.Bytes != 84 || parent.Packets != 1 || parent.Protocol != 1 {
 		t.Fatalf("survivor payload = %d bytes / %d pkts / proto %d", parent.Bytes, parent.Packets, parent.Protocol)
 	}
-	// The post-NAT record is untouched.
-	if got[1].SrcAddr != "192.168.0.2" {
-		t.Fatalf("second row src = %s, want the post-NAT 192.168.0.2", got[1].SrcAddr)
+	if got[1].SrcAddr != natWANSrc {
+		t.Fatalf("second row src = %s, want the post-NAT %s", got[1].SrcAddr, natWANSrc)
 	}
 }
 
@@ -115,7 +123,7 @@ func TestParentChildDuplicatesAcrossBatches(t *testing.T) {
 	if err := st.InsertBatch(context.Background(), records[:1]); err != nil {
 		t.Fatalf("insert first batch: %v", err)
 	}
-	if err := st.InsertBatch(context.Background(), records[1:2]); err != nil {
+	if err := st.InsertBatch(context.Background(), records[2:3]); err != nil {
 		t.Fatalf("insert second batch: %v", err)
 	}
 	if got := countRows(t, st, "flows"); got != 1 {
@@ -157,21 +165,73 @@ func TestDedupedRowsDriveAggregates(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	// Two stored records: 98 bytes each, one packet each.
+	// Two stored records — the parent and the post-NAT copy — at 84 bytes each.
 	var bytes, packets, flows int64
 	if err := st.DB().QueryRow(`SELECT SUM(bytes), SUM(packets), SUM(flows) FROM agg_exporter`).Scan(&bytes, &packets, &flows); err != nil {
 		t.Fatalf("read agg_exporter: %v", err)
 	}
-	if bytes != 196 || packets != 2 || flows != 2 {
-		t.Fatalf("agg_exporter = %d bytes / %d packets / %d flows, want 196/2/2", bytes, packets, flows)
+	if bytes != 168 || packets != 2 || flows != 2 {
+		t.Fatalf("agg_exporter = %d bytes / %d packets / %d flows, want 168/2/2", bytes, packets, flows)
 	}
 	// The ingress interface aggregate must not carry the dropped child row.
 	var childFlows int64
 	if err := st.DB().QueryRow(`SELECT COALESCE(SUM(flows),0) FROM agg_interface WHERE if_index = 7`).Scan(&childFlows); err != nil {
 		t.Fatalf("read agg_interface: %v", err)
 	}
-	if childFlows != 0 {
-		t.Fatalf("dropped child row reached agg_interface: %d flows on if_index 7", childFlows)
+	// The post-NAT row is the only thing left on if_index 7; the dropped pre-NAT
+	// child must not add to it.
+	if childFlows != 1 {
+		t.Fatalf("agg_interface if_index 7 = %d flows, want 1 (post-NAT only)", childFlows)
+	}
+}
+
+// ifIndex 0 means "absent", not "the most parent interface". A duplicate group
+// that contains a record with no input interface must never keep it as the
+// survivor: doing so attributes the traffic to an unknown interface. This is the
+// shape sre measured as `0+11`, `2+0+11`, `0+2+7`.
+func TestZeroInputInterfaceNeverWins(t *testing.T) {
+	st, _ := testStore(t, 24*time.Hour, 72*time.Hour)
+	end := time.Now().UTC().Truncate(time.Second)
+
+	// The ifIndex-0 copy arrives first so the survivor rule has to promote.
+	unknown := pingRecord(end, 0, "10.10.10.194", 0)
+	parent := pingRecord(end, 2, "10.10.10.194", 0)
+	if err := st.InsertBatch(context.Background(), []model.Flow{unknown, parent}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	got := storedFlows(t, st, 5)
+	if len(got) != 1 {
+		t.Fatalf("stored %d rows, want 1", len(got))
+	}
+	if got[0].InputIf != 2 {
+		t.Fatalf("survivor input_if = %d, want 2 (ifIndex 0 is absent, not the parent)", got[0].InputIf)
+	}
+
+	// The unknown copy arriving second must not displace the parent either.
+	st2, _ := testStore(t, 24*time.Hour, 72*time.Hour)
+	if err := st2.InsertBatch(context.Background(), []model.Flow{parent, unknown}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	got2 := storedFlows(t, st2, 5)
+	if len(got2) != 1 || got2[0].InputIf != 2 {
+		t.Fatalf("survivor = %+v, want a single row on input_if 2", got2)
+	}
+}
+
+// A group where every member has no input interface must still store exactly one
+// row, and it must not panic or drop the flow.
+func TestAllZeroInputInterfaceKeepsOneRow(t *testing.T) {
+	st, _ := testStore(t, 24*time.Hour, 72*time.Hour)
+	end := time.Now().UTC().Truncate(time.Second)
+	a := pingRecord(end, 0, "10.10.10.194", 0)
+	b := pingRecord(end, 0, "10.10.10.194", 0)
+	b.OutputIf = 1
+
+	if err := st.InsertBatch(context.Background(), []model.Flow{a, b}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if got := countRows(t, st, "flows"); got != 1 {
+		t.Fatalf("stored %d rows, want 1", got)
 	}
 }
 
@@ -184,13 +244,14 @@ func TestDedupedRowsDriveAggregates(t *testing.T) {
 func TestPromotionMovesInterfaceAggregate(t *testing.T) {
 	st, _ := testStore(t, 24*time.Hour, 72*time.Hour)
 	end := time.Now().UTC().Truncate(time.Second)
-	records := pingRecords(end)
-
-	// Child first, parent second, in separate batches.
-	if err := st.InsertBatch(context.Background(), records[1:2]); err != nil {
+	// The pre-NAT child (in=7) is stored first, the parent (in=2) second, in
+	// separate batches: the stored row must be promoted to the parent's interfaces.
+	child := pingRecord(end, 7, natInnerSrc, 0)
+	parent := pingRecord(end, 2, natInnerSrc, 0)
+	if err := st.InsertBatch(context.Background(), []model.Flow{child}); err != nil {
 		t.Fatalf("insert child: %v", err)
 	}
-	if err := st.InsertBatch(context.Background(), records[:1]); err != nil {
+	if err := st.InsertBatch(context.Background(), []model.Flow{parent}); err != nil {
 		t.Fatalf("insert parent: %v", err)
 	}
 
