@@ -53,6 +53,9 @@ Important knobs:
 | `database.retention.cleanup_interval` | How often expired rows are swept. Default `1h`; a sweep also runs at startup. |
 | `database.retention.cleanup_batch` | Rows deleted per retention statement; keeps sweeps short. |
 | `database.resolution` | Chart resolution tiers as `bucket`/`retention` pairs. Defaults: `1m` for `168h`, `5m` for `720h`. |
+| `database.dedup.parent_child` | Collapse the parent-interface and VLAN-child copies of one frame. On by default. |
+| `database.dedup.nat.wan_addresses` | The firewall's own address(es) on the NAT boundary. Enables dropping the post-NAT copy of a forwarded packet when its pre-NAT mate is seen. Off when empty. |
+| `database.dedup.nat.window` | How far apart the two NAT views' export timestamps may be. Default `2s`. |
 | `decoder.workers` | Decode parallelism. Increase if UDP queue drops are reported. |
 | `decoder.queue_size` | Packets buffered before UDP packets are dropped. |
 | `decoder.template_ttl` | Time after which an unseen v9 template is forgotten. |

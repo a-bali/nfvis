@@ -26,7 +26,14 @@ func TestDNSWorkerPersistsHistoricalNamesAndMetrics(t *testing.T) {
 	}
 	defer st.Close()
 	now := time.Now()
-	flows := []model.Flow{{ReceivedAtMS: now.UnixMilli(), EndMS: now.UnixMilli(), TimeSource: "received", SrcAddr: "192.0.2.1"}, {ReceivedAtMS: now.UnixMilli(), EndMS: now.UnixMilli(), TimeSource: "received", SrcAddr: "192.0.2.1"}}
+	// Two distinct flows. They differ only in source port: two records with an
+	// identical payload and export interval are one frame seen twice and are
+	// collapsed by dedup, so a fixture that repeats a record verbatim no longer
+	// yields two rows to look up.
+	flows := []model.Flow{
+		{ReceivedAtMS: now.UnixMilli(), EndMS: now.UnixMilli(), TimeSource: "received", SrcAddr: "192.0.2.1", SrcPort: 1111},
+		{ReceivedAtMS: now.UnixMilli(), EndMS: now.UnixMilli(), TimeSource: "received", SrcAddr: "192.0.2.1", SrcPort: 2222},
+	}
 	ids, err := st.InsertBatchIDs(context.Background(), flows)
 	if err != nil {
 		t.Fatal(err)

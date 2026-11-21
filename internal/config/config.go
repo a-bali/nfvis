@@ -73,6 +73,29 @@ type DatabaseConfig struct {
 	Flush      Duration         `yaml:"flush_interval"`
 	Retention  RetentionConfig  `yaml:"retention"`
 	Resolution []ResolutionTier `yaml:"resolution"`
+	// Dedup collapses records OPNsense's ng_netflow emits more than once for the
+	// same packet.
+	Dedup DedupConfig `yaml:"dedup"`
+}
+
+// DedupConfig controls duplicate record suppression.
+type DedupConfig struct {
+	// ParentChild collapses the parent-interface and VLAN-child copies of one
+	// frame. ng_netflow exports one record per interface node, so a tagged frame
+	// appears twice, differing only in input_if/output_if.
+	ParentChild bool `yaml:"parent_child"`
+	// NAT suppresses the post-NAT copy of a forwarded packet when its pre-NAT
+	// mate has been seen. It requires WANAddresses: the firewall's own addresses
+	// on the NAT boundary. Without them it stays off, because the firewall's own
+	// WAN-sourced traffic (its DNS, NTP, ...) is genuine and must not be dropped.
+	NAT NATConfig `yaml:"nat"`
+}
+
+// NATConfig configures pre-NAT/post-NAT duplicate suppression.
+type NATConfig struct {
+	WANAddresses []string `yaml:"wan_addresses"`
+	// Window bounds the distance between the two views' export timestamps.
+	Window Duration `yaml:"window"`
 }
 
 // ResolutionTier keeps traffic totals at a fixed bucket width for a bounded
@@ -188,6 +211,10 @@ func Default() Config {
 			Resolution: []ResolutionTier{
 				{Bucket: Duration(time.Minute), Retention: Duration(7 * 24 * time.Hour)},
 				{Bucket: Duration(5 * time.Minute), Retention: Duration(30 * 24 * time.Hour)},
+			},
+			Dedup: DedupConfig{
+				ParentChild: true,
+				NAT:         NATConfig{Window: Duration(2 * time.Second)},
 			},
 		},
 		Decoder: DecoderConfig{

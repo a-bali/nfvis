@@ -8,7 +8,7 @@ import (
 )
 
 // schemaVersion is incremented for every compatibility-breaking schema change.
-const schemaVersion = 3
+const schemaVersion = 4
 
 var migrations = []string{
 	`CREATE TABLE IF NOT EXISTS flows (
@@ -151,6 +151,13 @@ var migrations = []string{
 	ALTER TABLE flows ADD COLUMN dst_dns_ms INTEGER NOT NULL DEFAULT 0;
 	CREATE TABLE dns_host_history (hour_ms INTEGER NOT NULL, host TEXT NOT NULL, direction TEXT NOT NULL, name TEXT NOT NULL, last_ms INTEGER NOT NULL, PRIMARY KEY(hour_ms, host, direction, name)) WITHOUT ROWID;
 	CREATE INDEX idx_dns_history_hour ON dns_host_history(hour_ms);`,
+	// Migration 4: parent/child duplicate suppression. `dedup_key` is the
+	// payload fingerprint without the interfaces (see flowDedupKey). The unique
+	// index is the cross-batch memory that makes dedup hold across the 250 ms
+	// flush boundary; it is partial so rows written before this migration — which
+	// have no key and cannot be identified retroactively — are never collapsed.
+	`ALTER TABLE flows ADD COLUMN dedup_key BLOB;
+	CREATE UNIQUE INDEX idx_flows_dedup_key ON flows(dedup_key) WHERE dedup_key IS NOT NULL;`,
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

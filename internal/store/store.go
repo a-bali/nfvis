@@ -29,6 +29,11 @@ type Store struct {
 	statsMu     sync.Mutex
 	statsAt     time.Time
 	statsCached Stats
+
+	// nat is nil unless pre-NAT/post-NAT duplicate suppression is configured.
+	nat *natState
+	// parentChildDedup collapses the per-interface copies of one frame.
+	parentChildDedup bool
 }
 
 // statsTTL bounds how stale the cached row counts may be.
@@ -105,7 +110,11 @@ func Open(cfg config.Config) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &Store{db: db, cfg: cfg, path: path, tiers: tiers}, nil
+	return &Store{db: db, cfg: cfg, path: path, tiers: tiers,
+		parentChildDedup: cfg.Database.Dedup.ParentChild, nat: newNatState(NatPolicy{
+			WANAddresses: cfg.Database.Dedup.NAT.WANAddresses,
+			Window:       cfg.Database.Dedup.NAT.Window.Duration(),
+		})}, nil
 }
 
 // DB exposes the underlying pool for tests and maintenance tools.
