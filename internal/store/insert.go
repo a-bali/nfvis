@@ -205,17 +205,24 @@ RETURNING id`
 const updateFlowSQL = `UPDATE flows SET input_if=?, input_label=?, output_if=?, output_label=? WHERE id=?`
 
 // InsertResult reports what a batch did with each record.
+//
+// The contract callers rely on: every non-zero IDs[i] resolves to a row that
+// exists at commit and whose endpoints are record i's own, so a reverse-DNS
+// lookup queued by id cannot land on another flow or on a deleted row.
 type InsertResult struct {
-	// IDs is parallel to the input records. IDs[i] is the row that now holds
-	// record i: the new row's id, or the id of the existing row a duplicate was
-	// merged into. It is 0 when the record produced no row and no row holds the
-	// same endpoints (a dropped post-NAT view, whose addresses differ from the
-	// surviving pre-NAT row's).
+	// IDs is parallel to the input records. IDs[i] is the row that holds record
+	// i after the batch commits: the row this batch inserted, or the stored row a
+	// duplicate merged into. It is 0 when no row holds the record — a dropped
+	// non-equivalent view such as a post-NAT copy — and never the id of a row the
+	// batch deleted.
 	IDs []int64
-	// NewRows counts rows created by this batch.
+	// NewRows counts rows this batch created that still exist at commit. A row
+	// created and then superseded inside the same batch is not counted, so this
+	// is what "flows stored" means.
 	NewRows int
-	// Merged counts records that did not create a row because an equivalent row
-	// already existed. NewRows+Merged == len(flows).
+	// Merged counts records that did not become a row of their own: dropped
+	// views, promotions into an existing row, and records whose row was replaced
+	// by a later record in the batch. NewRows+Merged == len(flows).
 	Merged int
 }
 
@@ -270,42 +277,49 @@ func (s *Store) InsertBatchResult(ctx context.Context, flows []model.Flow) (Inse
 	defer deleteStmt.Close()
 
 	aggs := newBatchAggregates(len(flows), s.tiers)
+	// created holds the rows this batch inserted, so a later record in the same
+	// batch that supersedes one of them is accounted for correctly: the row is
+	// deleted and no longer counts as a new row, and its id is withdrawn from the
+	// position that reported it.
+	created := make(map[int64]int, len(flows))
 	for i := range flows {
 		f := &flows[i]
-		action, err := s.dedupAction(ctx, tx, f)
+		plan, err := s.dedupPlan(ctx, tx, f)
 		if err != nil {
 			return res, err
 		}
-		switch action.kind {
-		case actionDrop:
-			// The stored row already holds this record. Attach the lookup only when
-			// the row really is this record — the parent/child case, where the
-			// addresses are identical by construction. A dropped post-NAT view has a
-			// different source address, and a lookup for it must not be written onto
-			// the pre-NAT row.
-			if action.stored.SrcAddr == f.SrcAddr && action.stored.DstAddr == f.DstAddr {
-				res.IDs[i] = action.id
+		for _, row := range plan.delete {
+			if _, err := deleteStmt.ExecContext(ctx, row.id); err != nil {
+				return res, fmt.Errorf("delete superseded flow: %w", err)
 			}
-			res.Merged++
-			continue
-		case actionPromote:
-			if _, err := update.ExecContext(ctx, f.InputIf, f.InputLabel, f.OutputIf, f.OutputLabel, action.id); err != nil {
+			aggs.sub(row.flow)
+			if pos, ok := created[row.id]; ok {
+				// A row created earlier in this batch is being removed: it is not
+				// a new row any more, and the position that reported it must not
+				// hand a stale id to the DNS queue.
+				delete(created, row.id)
+				res.NewRows--
+				res.IDs[pos] = 0
+				res.Merged++
+			}
+		}
+		for _, p := range plan.promote {
+			if _, err := update.ExecContext(ctx, f.InputIf, f.InputLabel, f.OutputIf, f.OutputLabel, p.id); err != nil {
 				return res, fmt.Errorf("promote duplicate flow: %w", err)
 			}
 			// Only the interface columns are rewritten, so only agg_interface
 			// moves. Every other family is keyed by fields the stored row keeps.
-			aggs.moveInterfaces(action.stored, *f)
-			res.IDs[i] = action.id
+			aggs.moveInterfaces(p.stored, *f)
+		}
+		if plan.insert == nil {
+			// The record is represented by rows that already exist: either a
+			// stored row it merges into, or a stored row promoted to carry its
+			// interfaces.
+			res.IDs[i] = plan.mergeTo
 			res.Merged++
 			continue
-		case actionReplace:
-			// The stored row was the redundant view; it goes and this record
-			// takes its place as a new row.
-			if _, err := deleteStmt.ExecContext(ctx, action.id); err != nil {
-				return res, fmt.Errorf("delete superseded flow: %w", err)
-			}
-			aggs.sub(action.stored)
 		}
+		f = plan.insert
 		key := []byte(nil)
 		if s.dedupEnabled() {
 			key = flowDedupKey(f)
@@ -317,6 +331,7 @@ func (s *Store) InsertBatchResult(ctx context.Context, flows []model.Flow) (Inse
 		aggs.add(*f)
 		res.IDs[i] = id
 		res.NewRows++
+		created[id] = i
 	}
 	if err := upsertAggregates(ctx, tx, aggs); err != nil {
 		return res, err

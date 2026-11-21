@@ -89,9 +89,15 @@ describe the same packet, so:
 * `nat` drops a post-NAT copy only when the record's exporter and input
   interface are listed in `nat.exporters`, exactly **one** candidate mate exists
   with the opposite WAN/non-WAN source on the other configured interface, the
-  same output interface, the same protocol, destination, counters, and an export
-  timestamp within `window`. Zero or two candidates means no pair is proven, and
-  the record is stored.
+  same output interface, destination, protocol, counters, destination VLAN, TOS,
+  flags, AS numbers, sampling fields, direction and an export timestamp within
+  `window`. Zero or two candidates means no pair is proven, and the record is
+  stored.
+* The two mechanisms compose. When a pre-NAT parent arrives for a packet whose
+  child copy and post-NAT copy are already stored, one row survives that is the
+  pre-NAT copy on the parent interface: the post-NAT view is deleted, the child
+  row is promoted, and every arrival order (all six permutations, one batch or
+  split across flushes) reaches the same state.
 
 Known limitations, stated rather than hidden:
 
@@ -115,12 +121,25 @@ Known limitations, stated rather than hidden:
   table would destroy. The price is that a subtraction is only correct if the
   stored row it subtracts is the row that was added; that is why the writer reads
   back the stored row before acting on it.
-* **Interface promotion only moves interfaces.** When a child copy is promoted to
-  its parent, the row keeps its id (so queued reverse-DNS lookups stay attached)
+* **Promotion only moves interfaces.** When a child copy is promoted to its
+  parent, the row keeps its id (so queued reverse-DNS lookups stay attached)
   and only `agg_interface` moves: the update rewrites `input_if`/`output_if` and
   nothing else, so every other family is keyed by fields the stored row retains.
   Because promotion cannot change those fields, parent/child collapse additionally
   requires that both records agree on all of them (see above).
+
+### Batch accounting and reverse-DNS association
+
+`InsertBatchResult` returns per-record results with these semantics:
+
+| Field | Meaning |
+| --- | --- |
+| `IDs[i]` | The row that holds record `i` after the batch commits, or `0` when no row holds it (a dropped non-equivalent view such as a post-NAT copy). It is never the id of a row the batch deleted. |
+| `NewRows` | Rows this batch created that still exist at commit. A row created and then superseded inside the same batch is not counted. |
+| `Merged` | Records that did not become their own row: dropped views, promotions into an existing row, and records whose row was replaced by a later record in the batch. `NewRows + Merged == len(flows)`. |
+
+The collector queues reverse-DNS lookups by these ids, so a lookup can only be
+written to a row that exists at commit and whose endpoints are that record's own.
 
 ### Chart resolution tiers
 

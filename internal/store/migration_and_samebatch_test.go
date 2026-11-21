@@ -113,26 +113,37 @@ func TestSameBatchReplacementAggregatesAreExact(t *testing.T) {
 }
 
 // Deleting a stored post-NAT row must not leave the row's sampled/unknown
-// contributions behind in any family.
+// contributions behind in any family. Both views of one packet report the same
+// sampling, which is also what the pairing requires.
 func TestReplacementClearsSampledAndUnknownContributions(t *testing.T) {
 	st := natStore(t)
 	end := time.Now().UTC().Truncate(time.Second)
 
 	post := postNATRecord(end)
 	post.Sampled = true
-	post.InputIf = 7
+	post.SamplingInterval = 100
+	post.SamplingSource = "header"
 	insertOne(t, st, post)
 	pre := preNATRecord(end)
+	pre.Sampled = true
+	pre.SamplingInterval = 100
+	pre.SamplingSource = "header"
 	insertOne(t, st, pre)
 
 	assertAggregatesMatchFlows(t, st, "sampled replacement")
 
-	var sampled int64
+	var rows, sampled int64
+	if err := st.DB().QueryRow(`SELECT COUNT(*) FROM flows`).Scan(&rows); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 1 {
+		t.Fatalf("rows = %d, want 1", rows)
+	}
 	if err := st.DB().QueryRow(`SELECT COALESCE(SUM(sampled_flows),0) FROM agg_exporter`).Scan(&sampled); err != nil {
 		t.Fatal(err)
 	}
-	// The surviving pre-NAT record is not sampled, so the sampled count must be 0.
-	if sampled != 0 {
-		t.Fatalf("agg_exporter still counts %d sampled flows for a non-sampled survivor", sampled)
+	// One surviving sampled row, counted once.
+	if sampled != 1 {
+		t.Fatalf("agg_exporter sampled_flows = %d, want 1", sampled)
 	}
 }
