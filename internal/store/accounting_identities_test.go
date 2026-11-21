@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/balia/nfvis/internal/model"
+	"github.com/a-bali/nfvis/internal/model"
 )
 
 // One batch exercising every outcome at once: a fresh record, a parent/child

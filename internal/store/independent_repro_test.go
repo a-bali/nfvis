@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/balia/nfvis/internal/model"
+	"github.com/a-bali/nfvis/internal/model"
 )
 
 // The reviewer's repro, asserted rather than logged. Before the fix the stored

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/balia/nfvis/internal/model"
+	"github.com/a-bali/nfvis/internal/model"
 )
 
 // Composition tests: NAT and parent/child act on the same measured packet, whose

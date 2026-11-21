@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/balia/nfvis/internal/model"
+	"github.com/a-bali/nfvis/internal/model"
 )
 
 // A promoted duplicate must leave the stored row and the aggregates describing

@@ -320,7 +320,7 @@ func (s *Store) pickPostNATMate(f *model.Flow, candidates []storedRow, preIf uin
 // natViewMatches is sameNATViews with the exporter check, which sameNATViews
 // omits because the candidate query already scopes by exporter.
 func (s *Store) natViewMatches(stored, incoming *model.Flow) bool {
-	return stored.Exporter == incoming.Exporter && sameNATViews(stored, incoming)
+	return stored.Exporter == incoming.Exporter && sameNATViews(stored, incoming, s.nat.windowMS)
 }
 
 // sameNATViews reports whether two records can be the two views of one NAT
@@ -335,7 +335,7 @@ func (s *Store) natViewMatches(stored, incoming *model.Flow) bool {
 //
 // Everything else must be equal, including the destination VLAN, so a pair whose
 // destination classification or payload metadata differs is not paired.
-func sameNATViews(a, b *model.Flow) bool {
+func sameNATViews(a, b *model.Flow, windowMS int64) bool {
 	if a.DstAddr != b.DstAddr || a.DstPort != b.DstPort || a.Protocol != b.Protocol {
 		return false
 	}
@@ -368,7 +368,7 @@ func sameNATViews(a, b *model.Flow) bool {
 	if diff < 0 {
 		diff = -diff
 	}
-	return diff <= natPairWindowMS*2
+	return diff <= windowMS
 }
 
 // isValidatedPostNAT reports whether stored is the post-NAT view of canonical:
@@ -378,7 +378,7 @@ func (s *Store) isValidatedPostNAT(canonical, stored *model.Flow, postIf uint32)
 	return stored.InputIf == postIf &&
 		s.nat.isWANSource(stored.SrcAddr) &&
 		!s.nat.isWANSource(canonical.SrcAddr) &&
-		sameNATViews(canonical, stored)
+		sameNATViews(canonical, stored, s.nat.windowMS)
 }
 
 // parentChildPlan collapses a child-interface copy of a frame into the parent
