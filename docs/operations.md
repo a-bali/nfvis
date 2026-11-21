@@ -53,8 +53,10 @@ Important knobs:
 | `database.retention.cleanup_interval` | How often expired rows are swept. Default `1h`; a sweep also runs at startup. |
 | `database.retention.cleanup_batch` | Rows deleted per retention statement; keeps sweeps short. |
 | `database.resolution` | Chart resolution tiers as `bucket`/`retention` pairs. Defaults: `1m` for `168h`, `5m` for `720h`. |
-| `database.dedup.parent_child` | Collapse the parent-interface and VLAN-child copies of one frame. On by default. |
-| `database.dedup.nat.wan_addresses` | The firewall's own address(es) on the NAT boundary. Enables dropping the post-NAT copy of a forwarded packet when its pre-NAT mate is seen. Off when empty. |
+| `database.dedup.parent_child` | Collapse the parent-interface and VLAN-child copies of one frame. Requires `parent_child_links`; with no links declared it is a validation error. Off by default. |
+| `database.dedup.parent_child_links` | The exporter and interface pairs that are allowed to collapse, e.g. `{exporter: "192.168.1.1", parent: 2, child: 7}`. The parent record survives. |
+| `database.dedup.nat.wan_addresses` | The firewall's own address(es) on the NAT boundary. Requires `nat.exporters`; with addresses but no exporter entry it is a validation error. Off when empty. |
+| `database.dedup.nat.exporters` | The firewall that reports both NAT views and the input interface of each: `{address, pre_interface, post_interface}`. A record whose exporter or input interface is not listed is never paired. |
 | `database.dedup.nat.window` | How far apart the two NAT views' export timestamps may be. Default `2s`. |
 | `decoder.workers` | Decode parallelism. Increase if UDP queue drops are reported. |
 | `decoder.queue_size` | Packets buffered before UDP packets are dropped. |
@@ -67,6 +69,50 @@ Important knobs:
 | `exporters[].address` | UDP source IP of the device. Labels and interface names are keyed by this. |
 | `vlan_rules[]` | CIDR → VLAN mapping, scoped to `src`, `dst`, or `both`. Longest prefix wins; exported VLAN wins over rules. |
 | `vlan_labels` | Optional VLAN ID → display name mapping used by the VLAN tab. Unlabeled IDs show as `VLAN <id>`. |
+
+### Duplicate suppression and its residual risk
+
+Both mechanisms are **off by default** and both need the site's topology before
+they can do anything. A matching payload is not evidence that two records
+describe the same packet, so:
+
+* `parent_child` collapses only pairs named in `parent_child_links`, per
+  exporter. Records on the same interface, on an unconfigured interface, on the
+  reverse order of an unconfigured pair, or for an exporter with no links are
+  always stored separately.
+* `nat` drops a post-NAT copy only when the record's exporter and input
+  interface are listed in `nat.exporters`, exactly **one** candidate mate exists
+  with the opposite WAN/non-WAN source on the other configured interface, the
+  same output interface, the same protocol, destination, counters, and an export
+  timestamp within `window`. Zero or two candidates means no pair is proven, and
+  the record is stored.
+
+Known limitations, stated rather than hidden:
+
+* **NAT pairing is heuristic at the record level.** Two unrelated flows that
+  share protocol, destination address and port, byte and packet counts, output
+  interface and a sub-second export interval are indistinguishable from a
+  translated pair. The configured interface split and the single-candidate rule
+  remove the shapes measured in production (firewall-originated DNS colliding
+  with LAN DNS, cross-exporter matches), but they cannot prove the negative.
+  Keep `nat` off unless you need it, and if the firewall's own WAN-sourced
+  traffic and forwarded traffic are exported on the same input interface, leave
+  it off: nothing in the record separates them.
+* **Collapsed rows are not recoverable.** Suppression drops a row instead of
+  storing it; there is no shadow copy. Turning the mechanism off later does not
+  restore history, and rows already collapsed by earlier releases are gone.
+* **Aggregates are deltas, not re-derivations.** Every aggregate family
+  (`agg_exporter`, `agg_interface`, `agg_host`, `agg_vlan`, `agg_protocol`,
+  `agg_traffic`) is maintained by applying the exact contribution of each stored,
+  promoted or deleted row inside the ingest transaction. Aggregate history
+  therefore survives raw retention pruning, which a re-derivation from the raw
+  table would destroy. The price is that a subtraction is only correct if the
+  stored row it subtracts is the row that was added; that is why the writer reads
+  back the stored row before acting on it.
+* **Interface promotion is exact but only for interfaces.** When a child copy is
+  promoted to its parent, the row keeps its id (so queued reverse-DNS lookups stay
+  attached) and only `agg_interface` moves. The other families are keyed by fields
+  the copies share, so they do not change.
 
 ### Chart resolution tiers
 

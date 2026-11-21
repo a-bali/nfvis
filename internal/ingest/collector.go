@@ -465,16 +465,17 @@ func (c *Collector) batchLoop(ctx context.Context) {
 func (c *Collector) insertWithRetry(ctx context.Context, batch []model.Flow) error {
 	var err error
 	for attempt := 0; attempt < 3; attempt++ {
-		var ids []int64
-		ids, err = c.store.InsertBatchIDs(ctx, batch)
+		var res store.InsertResult
+		res, err = c.store.InsertBatchResult(ctx, batch)
 		if err == nil {
-			// A batch is not always fully written: duplicate suppression drops the
-			// redundant copies, so report the rows that exist and count the
-			// collapsed records separately.
-			c.queueDNS(ids, batch)
-			c.counters.FlowsStored.Add(uint64(len(ids)))
-			if collapsed := len(batch) - len(ids); collapsed > 0 {
-				c.counters.FlowsDuplicates.Add(uint64(collapsed))
+			// A batch is not always fully written: duplicate suppression merges the
+			// redundant copies. res.IDs is positional against batch, so the row a
+			// record ended up in is known exactly — a merged record must be looked
+			// up against the row that absorbed it, never against a neighbour's.
+			c.queueDNS(res.IDs, batch)
+			c.counters.FlowsStored.Add(uint64(res.NewRows))
+			if res.Merged > 0 {
+				c.counters.FlowsDuplicates.Add(uint64(res.Merged))
 			}
 			c.counters.LastSuccessMS.Store(time.Now().UnixMilli())
 			c.counters.Healthy.Store(true)

@@ -20,7 +20,10 @@ const (
 	natInnerSrc = "10.10.10.194"
 )
 
-// natStore opens a store with NAT dedup enabled for the measured WAN address.
+// natStore opens a store with NAT dedup enabled for the measured topology: the
+// firewall exports the pre-NAT view from input node 2 and the post-NAT view from
+// input node 7. Both the WAN address and those interfaces are required — without
+// the interface topology a counters match is not evidence of a NAT pair.
 func natStore(t *testing.T) *Store {
 	t.Helper()
 	cfg := config.Default()
@@ -28,6 +31,9 @@ func natStore(t *testing.T) *Store {
 	cfg.Database.Retention.Raw = config.Duration(24 * time.Hour)
 	cfg.Database.Retention.Hourly = config.Duration(72 * time.Hour)
 	cfg.Database.Dedup.NAT.WANAddresses = []string{natWANSrc}
+	cfg.Database.Dedup.NAT.Exporters = []config.NATExporter{
+		{Address: "192.0.2.10", PreInterface: 2, PostInterface: 7},
+	}
 	st, err := Open(cfg)
 	if err != nil {
 		t.Fatalf("open store: %v", err)
@@ -132,10 +138,11 @@ func TestFirewallOriginatedWANTrafficSurvives(t *testing.T) {
 	}
 }
 
-// The combined mechanism on the measured ping: three records in, one out, and
-// the survivor is the pre-NAT parent.
+// The combined mechanism on the measured ping: with both the parent/child link
+// and the NAT topology declared, three records in, one out, and the survivor is
+// the pre-NAT parent.
 func TestCombinedDedupLeavesOnePreNATParentRecord(t *testing.T) {
-	st := natStore(t)
+	st := combinedStore(t)
 	end := time.Now().UTC().Truncate(time.Second)
 	records := append(pingRecords(end), postNATRecord(end))
 

@@ -221,7 +221,10 @@ func TestManualRunAfterDebounceSweeps(t *testing.T) {
 	for coll.RetentionStatus().Runs == 0 && time.Now().Before(deadline) {
 		time.Sleep(5 * time.Millisecond)
 	}
-	coll.retentionDebounce = time.Millisecond
+	// Zero disables the debounce entirely. A non-zero window is racy here: the
+	// startup sweep may have finished microseconds before this call, and the
+	// request would legitimately be folded into it under package-wide load.
+	coll.retentionDebounce = 0
 	before := coll.RetentionStatus().Runs
 	if _, err := coll.RunRetention(context.Background()); err != nil {
 		t.Fatal(err)

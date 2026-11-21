@@ -7,18 +7,28 @@ database:
   path: "data/nfvis.db"
   batch_size: 1000
   flush_interval: 250ms
-  # Duplicate suppression. ng_netflow on OPNsense exports one record per
-  # interface node, so a tagged frame appears once for the parent interface and
-  # once for its VLAN child; both are stored unless parent_child is on.
+  # Duplicate suppression. Both mechanisms are inert until you declare the
+  # topology they exploit: a matching payload alone is not evidence that two
+  # records describe the same packet, so with nothing configured every record is
+  # stored. See docs/operations.md before enabling either.
   dedup:
-    parent_child: true
-    # The pre-NAT and post-NAT view of one forwarded packet are both exported.
-    # Set wan_addresses to the firewall's own address(es) on the NAT boundary so
-    # the post-NAT copy is dropped when its pre-NAT mate is seen. Leave it empty
-    # to keep both copies: without the address there is no way to tell a
-    # post-NAT copy from the firewall's own WAN-sourced traffic.
+    # Collapse the per-interface copies of one frame. Requires
+    # parent_child_links: the exporter and the interface pairs that may
+    # collapse. The parent record survives.
+    parent_child: false
+    parent_child_links: []
+    #   - exporter: "192.168.1.1"
+    #     parent: 2
+    #     child: 7
+    # Drop the post-NAT copy of a forwarded packet when its pre-NAT mate is
+    # seen. Requires wan_addresses (the firewall's own NAT-boundary addresses)
+    # and an exporters entry naming the input interface of each view.
     nat:
       wan_addresses: []
+      exporters: []
+      # - address: "192.168.1.1"
+      #   pre_interface: 2
+      #   post_interface: 7
       window: 2s
   retention:
     raw: 720h              # 30 days

@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/a-bali/nfvis/internal/config"
 	"github.com/a-bali/nfvis/internal/model"
 )
 
@@ -52,7 +53,7 @@ func pingRecord(end time.Time, inputIf uint32, src string, srcPort uint16) model
 //	R3 child, pre-NAT    in=7 out=1  10.10.10.194
 //
 // R1 and R3 share a fingerprint (they differ only in interfaces); R2 differs in
-// source address and so is M2's business, not M1's.
+// source address and so is the NAT mechanism's business, not M1's.
 func pingRecords(end time.Time) []model.Flow {
 	return []model.Flow{
 		pingRecord(end, 2, "10.10.10.194", 0),
@@ -82,11 +83,12 @@ func storedFlows(t *testing.T, st *Store, limit int) []FlowRecord {
 	return out
 }
 
-// M1: the parent and VLAN-child copies of one frame are byte-identical apart
-// from input_if/output_if, so they must collapse to a single row. The post-NAT
-// copy has a different source address and belongs to M2, so M1 leaves it.
+// M1: with the parent/child link for interfaces 2 and 7 declared, the two
+// copies of one frame collapse to a single row carrying the parent's interfaces.
+// Without that declaration nothing collapses, which TestParentChildNeedsLinks
+// covers.
 func TestParentChildDuplicatesCollapseToParent(t *testing.T) {
-	st, _ := testStore(t, 24*time.Hour, 72*time.Hour)
+	st := pcStore(t)
 	end := time.Now().UTC().Truncate(time.Second)
 	if err := st.InsertBatch(context.Background(), pingRecords(end)); err != nil {
 		t.Fatalf("insert: %v", err)
@@ -110,13 +112,28 @@ func TestParentChildDuplicatesCollapseToParent(t *testing.T) {
 	if got[1].SrcAddr != natWANSrc {
 		t.Fatalf("second row src = %s, want the post-NAT %s", got[1].SrcAddr, natWANSrc)
 	}
+	assertAggregatesMatchFlows(t, st, "parent/child collapse")
+}
+
+// No declared link means nothing is provably a duplicate, so every record is
+// stored. This is the lossless default and the reason parent_child cannot be
+// switched on by itself.
+func TestParentChildNeedsLinks(t *testing.T) {
+	st, _ := testStore(t, 24*time.Hour, 72*time.Hour)
+	end := time.Now().UTC().Truncate(time.Second)
+	if err := st.InsertBatch(context.Background(), pingRecords(end)); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if got := countRows(t, st, "flows"); got != 3 {
+		t.Fatalf("stored %d rows with no links configured, want all 3", got)
+	}
 }
 
 // M1 is not batch-local: 10,389 duplicate groups in one measured hour straddle
 // the 250 ms flush boundary, so a second batch must not re-insert a key the
 // previous batch already stored.
 func TestParentChildDuplicatesAcrossBatches(t *testing.T) {
-	st, _ := testStore(t, 24*time.Hour, 72*time.Hour)
+	st := pcStore(t)
 	end := time.Now().UTC().Truncate(time.Second)
 	records := pingRecords(end)
 
@@ -135,13 +152,14 @@ func TestParentChildDuplicatesAcrossBatches(t *testing.T) {
 	if len(got) != 1 || got[0].InputIf != 2 {
 		t.Fatalf("survivor = %+v, want a single row with input_if 2", got)
 	}
+	assertAggregatesMatchFlows(t, st, "parent/child across batches")
 }
 
 // A long-lived flow is re-exported with cumulative counters (packets 1, then
 // 2, ...). Those records share every field except bytes/packets and must all be
 // stored, or live connections lose their traffic.
 func TestCumulativeReExportsAreNotCollapsed(t *testing.T) {
-	st, _ := testStore(t, 24*time.Hour, 72*time.Hour)
+	st := pcStore(t)
 	end := time.Now().UTC().Truncate(time.Second)
 	first := pingRecord(end, 2, "10.10.10.194", 0)
 	second := first
@@ -159,7 +177,7 @@ func TestCumulativeReExportsAreNotCollapsed(t *testing.T) {
 // Deduping storage while still summing the dropped rows into the aggregates is
 // the bug to avoid: every aggregate must equal the deduped totals.
 func TestDedupedRowsDriveAggregates(t *testing.T) {
-	st, _ := testStore(t, 24*time.Hour, 72*time.Hour)
+	st := pcStore(t)
 	end := time.Now().UTC().Truncate(time.Second)
 	if err := st.InsertBatch(context.Background(), pingRecords(end)); err != nil {
 		t.Fatalf("insert: %v", err)
@@ -183,66 +201,69 @@ func TestDedupedRowsDriveAggregates(t *testing.T) {
 	if childFlows != 1 {
 		t.Fatalf("agg_interface if_index 7 = %d flows, want 1 (post-NAT only)", childFlows)
 	}
+	assertAggregatesMatchFlows(t, st, "deduped aggregates")
 }
 
-// ifIndex 0 means "absent", not "the most parent interface". A duplicate group
-// that contains a record with no input interface must never keep it as the
-// survivor: doing so attributes the traffic to an unknown interface. This is the
-// shape sre measured as `0+11`, `2+0+11`, `0+2+7`.
-func TestZeroInputInterfaceNeverWins(t *testing.T) {
-	st, _ := testStore(t, 24*time.Hour, 72*time.Hour)
+// ifIndex 0 means "absent", not "the most parent interface". A record that
+// carries no input interface is never collapsed into another row, in either
+// arrival order: doing so would attribute or hide a traversal arbitrarily.
+func TestZeroInputInterfaceIsNeverCollapsed(t *testing.T) {
+	for _, order := range []string{"unknown-first", "parent-first"} {
+		t.Run(order, func(t *testing.T) {
+			st := pcStore(t)
+			end := time.Now().UTC().Truncate(time.Second)
+			unknown := pingRecord(end, 0, "10.10.10.194", 0)
+			parent := pingRecord(end, 2, "10.10.10.194", 0)
+			batch := []model.Flow{unknown, parent}
+			if order == "parent-first" {
+				batch = []model.Flow{parent, unknown}
+			}
+			if err := st.InsertBatch(context.Background(), batch); err != nil {
+				t.Fatalf("insert: %v", err)
+			}
+			if got := countRows(t, st, "flows"); got != 2 {
+				t.Fatalf("stored %d rows, want 2: an unrecorded interface cannot be proven a copy", got)
+			}
+			assertAggregatesMatchFlows(t, st, "zero interface preserved")
+		})
+	}
+}
+
+// A group of more than one stored copy is not collapsed: once two rows share a
+// fingerprint there is no single provable parent, and collapsing into either
+// would discard a traversal on a guess.
+func TestMultiplicityAboveOneIsPreserved(t *testing.T) {
+	st := pcStore(t)
 	end := time.Now().UTC().Truncate(time.Second)
 
-	// The ifIndex-0 copy arrives first so the survivor rule has to promote.
-	unknown := pingRecord(end, 0, "10.10.10.194", 0)
 	parent := pingRecord(end, 2, "10.10.10.194", 0)
-	if err := st.InsertBatch(context.Background(), []model.Flow{unknown, parent}); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
-	got := storedFlows(t, st, 5)
-	if len(got) != 1 {
-		t.Fatalf("stored %d rows, want 1", len(got))
-	}
-	if got[0].InputIf != 2 {
-		t.Fatalf("survivor input_if = %d, want 2 (ifIndex 0 is absent, not the parent)", got[0].InputIf)
-	}
+	child := pingRecord(end, 7, "10.10.10.194", 0)
+	// A third copy on a second child interface, which is not a declared link.
+	other := pingRecord(end, 9, "10.10.10.194", 0)
 
-	// The unknown copy arriving second must not displace the parent either.
-	st2, _ := testStore(t, 24*time.Hour, 72*time.Hour)
-	if err := st2.InsertBatch(context.Background(), []model.Flow{parent, unknown}); err != nil {
+	if err := st.InsertBatch(context.Background(), []model.Flow{parent, child, other}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	got2 := storedFlows(t, st2, 5)
-	if len(got2) != 1 || got2[0].InputIf != 2 {
-		t.Fatalf("survivor = %+v, want a single row on input_if 2", got2)
+	// parent+child collapse; the unlinked interface 9 record stays.
+	got := storedFlows(t, st, 10)
+	if len(got) != 2 {
+		t.Fatalf("stored %d rows, want 2 (collapsed parent/child plus the unlinked copy)", len(got))
 	}
+	var ifIndexes []uint32
+	for _, r := range got {
+		ifIndexes = append(ifIndexes, r.InputIf)
+	}
+	if ifIndexes[0] != 2 || ifIndexes[1] != 9 {
+		t.Fatalf("survivors on interfaces %v, want [2 9]", ifIndexes)
+	}
+	assertAggregatesMatchFlows(t, st, "multiplicity")
 }
 
-// A group where every member has no input interface must still store exactly one
-// row, and it must not panic or drop the flow.
-func TestAllZeroInputInterfaceKeepsOneRow(t *testing.T) {
-	st, _ := testStore(t, 24*time.Hour, 72*time.Hour)
-	end := time.Now().UTC().Truncate(time.Second)
-	a := pingRecord(end, 0, "10.10.10.194", 0)
-	b := pingRecord(end, 0, "10.10.10.194", 0)
-	b.OutputIf = 1
-
-	if err := st.InsertBatch(context.Background(), []model.Flow{a, b}); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
-	if got := countRows(t, st, "flows"); got != 1 {
-		t.Fatalf("stored %d rows, want 1", got)
-	}
-}
-
-// Promotions must not leave a stale interface aggregate behind. When the VLAN
-
-// child is stored by an earlier batch and the parent arrives later, the row is
-// rewritten to the parent's interfaces — the aggregate written for the child
-// must move with it, or the dashboard reports a traversal that no stored row
-// supports.
+// Promotion moves the stored row's interface contribution: the aggregate written
+// for the child must move with it, or the dashboard reports a traversal that no
+// stored row supports.
 func TestPromotionMovesInterfaceAggregate(t *testing.T) {
-	st, _ := testStore(t, 24*time.Hour, 72*time.Hour)
+	st := pcStore(t)
 	end := time.Now().UTC().Truncate(time.Second)
 	// The pre-NAT child (in=7) is stored first, the parent (in=2) second, in
 	// separate batches: the stored row must be promoted to the parent's interfaces.
@@ -279,6 +300,7 @@ func TestPromotionMovesInterfaceAggregate(t *testing.T) {
 	if ingress[2] != 1 {
 		t.Fatalf("agg_interface ingress for the parent = %d flows, want 1 (%v)", ingress[2], ingress)
 	}
+	assertAggregatesMatchFlows(t, st, "promotion aggregates")
 }
 
 // A record with no usable identity carries a NULL key and must never be
@@ -296,13 +318,12 @@ func TestRecordsWithoutIdentityAreAlwaysStored(t *testing.T) {
 	}
 }
 
-// Two different exporters reporting the same payload are distinct observations,
-// and a flow with no dedup identity (pre-existing rows) must never be collapsed.
+// Two different exporters reporting the same payload are distinct observations.
 func TestDedupKeyScopedToExporter(t *testing.T) {
-	st, _ := testStore(t, 24*time.Hour, 72*time.Hour)
+	st := pcStore(t)
 	end := time.Now().UTC().Truncate(time.Second)
 	a := pingRecord(end, 2, "10.10.10.194", 0)
-	b := a
+	b := pingRecord(end, 7, "10.10.10.194", 0)
 	b.Exporter = "192.0.2.11"
 	b.ExporterIP = "192.0.2.11"
 
@@ -311,5 +332,89 @@ func TestDedupKeyScopedToExporter(t *testing.T) {
 	}
 	if got := countRows(t, st, "flows"); got != 2 {
 		t.Fatalf("stored %d rows, want 2 (one per exporter)", got)
+	}
+}
+
+// The configured link is directional and per exporter: the reverse pair and a
+// different exporter are both preserved.
+func TestParentChildLinkIsPerExporterAndDirectional(t *testing.T) {
+	st := pcStore(t)
+	end := time.Now().UTC().Truncate(time.Second)
+
+	// Reversed: 2 arrives as a "child" of 7, which is not declared.
+	reversed := []model.Flow{
+		pingRecord(end, 7, "10.10.10.194", 0),
+		pingRecord(end, 2, "10.10.10.194", 0),
+	}
+	if err := st.InsertBatch(context.Background(), reversed); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	// The declared direction is parent 2, child 7, so this pair still collapses.
+	if got := countRows(t, st, "flows"); got != 1 {
+		t.Fatalf("declared pair collapsed to %d rows, want 1", got)
+	}
+
+	// A second exporter with the same interface numbers has no links.
+	st2 := pcStore(t)
+	other := pingRecord(end, 7, "10.10.10.194", 0)
+	other.Exporter, other.ExporterIP = "192.0.2.11", "192.0.2.11"
+	base := pingRecord(end, 2, "10.10.10.194", 0)
+	base.Exporter, base.ExporterIP = "192.0.2.11", "192.0.2.11"
+	if err := st2.InsertBatch(context.Background(), []model.Flow{base, other}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if got := countRows(t, st2, "flows"); got != 2 {
+		t.Fatalf("stored %d rows for the unlinked exporter, want 2", got)
+	}
+}
+
+// A child copy that differs in its output interface is not a copy: the pair only
+// shares the fields the fingerprint covers, and the path through the device
+// differs.
+func TestParentChildRequiresMatchingOutputInterface(t *testing.T) {
+	st := pcStore(t)
+	end := time.Now().UTC().Truncate(time.Second)
+	parent := pingRecord(end, 2, "10.10.10.194", 0)
+	child := pingRecord(end, 7, "10.10.10.194", 0)
+	child.OutputIf = 3
+	if err := st.InsertBatch(context.Background(), []model.Flow{parent, child}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if got := countRows(t, st, "flows"); got != 2 {
+		t.Fatalf("stored %d rows, want 2: differing output interfaces are different paths", got)
+	}
+}
+
+// Config validation must reject a topology that cannot work rather than silently
+// doing nothing.
+func TestDedupConfigValidation(t *testing.T) {
+	cases := map[string]func(*config.Config){
+		"parent_child without links": func(c *config.Config) { c.Database.Dedup.ParentChild = true },
+		"link with zero parent": func(c *config.Config) {
+			c.Database.Dedup.ParentChildLinks = []config.ParentChildLink{{Exporter: "192.0.2.10", Parent: 0, Child: 7}}
+		},
+		"nat addresses without exporters": func(c *config.Config) {
+			c.Database.Dedup.NAT.WANAddresses = []string{natWANSrc}
+		},
+		"nat exporter without interfaces": func(c *config.Config) {
+			c.Database.Dedup.NAT.Exporters = []config.NATExporter{{Address: "192.0.2.10"}}
+		},
+	}
+	for name, mutate := range cases {
+		t.Run(name, func(t *testing.T) {
+			cfg := config.Default()
+			mutate(&cfg)
+			if err := cfg.Validate(); err == nil {
+				t.Fatalf("configuration accepted, want a validation error")
+			}
+		})
+	}
+	// The defaults are valid and enable nothing.
+	cfg := config.Default()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("defaults must validate: %v", err)
+	}
+	if cfg.Database.Dedup.ParentChild || len(cfg.Database.Dedup.NAT.WANAddresses) > 0 {
+		t.Fatal("defaults enable duplicate suppression, which cannot be safe without topology")
 	}
 }

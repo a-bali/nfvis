@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 
+	"github.com/a-bali/nfvis/internal/config"
 	"github.com/a-bali/nfvis/internal/model"
 )
 
@@ -14,13 +15,14 @@ import (
 const dedupKeyBytes = 16
 
 // flowDedupKey returns the identity of a flow's payload, or nil when the record
-// carries no usable identity (all-zero timestamps), in which case it is stored
-// unconditionally.
+// carries no usable identity (all-zero timestamps), in which case it is never
+// matched against anything.
 //
 // The key deliberately covers the payload and the export interval but not the
-// interfaces: OPNsense's ng_netflow emits one record per interface node, so the
-// frame seen on re1 and the same frame seen on its VLAN child differ only in
-// input_if/output_if.
+// interfaces: two records that differ only in input_if/output_if may be the
+// parent and child copies of one frame. The key alone does not authorize a
+// collapse — that requires a configured interface link (see pcState). Callers
+// must treat key equality as "worth a lookup", never as "the same packet".
 //
 // bytes and packets are part of the key on purpose. OPNsense re-exports a live
 // connection with cumulative counters at each 60 s active timeout, so the same
@@ -58,31 +60,75 @@ func flowDedupKey(f *model.Flow) []byte {
 	return sum[:dedupKeyBytes]
 }
 
-// prefersInput reports whether a record on ifIndex should replace a stored
-// duplicate on storedIndex.
+// relation is how two interface numbers relate under the configured topology.
+type relation int
+
+const (
+	// relationNone: no configured link joins the two interfaces.
+	relationNone relation = iota
+	// relationParent: the first interface is the parent, the second its child.
+	relationParent
+	// relationChild: the first interface is the child, the second its parent.
+	relationChild
+)
+
+// pcState is the resolved parent/child topology: which interface pairs of which
+// exporter are allowed to collapse into one row.
 //
-// The surviving record is the one on the smallest non-zero input interface.
-// OPNsense numbers interfaces in creation order, so a parent precedes its
-// sub-interfaces (measured pairs: 2+7, 2+13, 2+10, 2+11, 2+12), and keeping the
-// parent preserves the pre-NAT source identity that the ping fixture shows
-// surviving. It also makes the outcome independent of arrival order.
-//
-// ifIndex 0 means "not recorded", not "the most parent interface": a plain
-// minimum would pick it and attribute the traffic to an unknown interface, which
-// happens in 1,208 duplicate groups an hour on the measured exporter.
-//
-// When neither side has an input interface there is nothing to prefer, so the
-// first stored copy is kept: no tie-break among equal interfaces is needed (no
-// group in the measured hour had two records on the same input_if).
-func prefersInput(ifIndex, storedIndex uint32) bool {
-	switch {
-	case ifIndex == 0 && storedIndex == 0:
-		return false
-	case ifIndex == 0:
-		return false
-	case storedIndex == 0:
-		return true
-	default:
-		return ifIndex < storedIndex
+// ng_netflow exports one record per interface node, so a tagged frame is
+// reported on the physical parent and again on its VLAN child. Which node is a
+// parent of which is site knowledge, and inference is unsafe: two records that
+// differ only in interface can equally be two genuine traversals (a loop, a
+// bridge, a monitor port). The policy therefore collapses only pairs the
+// operator declared, per exporter, and never collapses anything else.
+type pcState struct {
+	links map[string]map[[2]uint32]struct{}
+}
+
+func newPCState(enabled bool, links []config.ParentChildLink) *pcState {
+	if !enabled || len(links) == 0 {
+		return nil
 	}
+	p := &pcState{links: make(map[string]map[[2]uint32]struct{}, len(links))}
+	for _, l := range links {
+		if l.Parent == 0 || l.Child == 0 || l.Parent == l.Child || l.Exporter == "" {
+			continue
+		}
+		pair := [2]uint32{l.Parent, l.Child}
+		if p.links[l.Exporter] == nil {
+			p.links[l.Exporter] = make(map[[2]uint32]struct{})
+		}
+		p.links[l.Exporter][pair] = struct{}{}
+	}
+	if len(p.links) == 0 {
+		return nil
+	}
+	return p
+}
+
+// hasExporter reports whether any link is configured for exporter. An exporter
+// with no links never participates, so its records are always stored.
+func (p *pcState) hasExporter(exporter string) bool {
+	if p == nil {
+		return false
+	}
+	_, ok := p.links[exporter]
+	return ok
+}
+
+// relation reports how a and b relate under this exporter's links.
+func (p *pcState) relation(exporter string, a, b uint32) relation {
+	if p == nil || a == 0 || b == 0 || a == b {
+		// ifIndex 0 means "not recorded", not "the outermost interface".
+		return relationNone
+	}
+	for pair := range p.links[exporter] {
+		switch {
+		case pair[0] == a && pair[1] == b:
+			return relationParent
+		case pair[0] == b && pair[1] == a:
+			return relationChild
+		}
+	}
+	return relationNone
 }

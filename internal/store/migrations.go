@@ -8,7 +8,7 @@ import (
 )
 
 // schemaVersion is incremented for every compatibility-breaking schema change.
-const schemaVersion = 4
+const schemaVersion = 5
 
 var migrations = []string{
 	`CREATE TABLE IF NOT EXISTS flows (
@@ -158,6 +158,15 @@ var migrations = []string{
 	// have no key and cannot be identified retroactively — are never collapsed.
 	`ALTER TABLE flows ADD COLUMN dedup_key BLOB;
 	CREATE UNIQUE INDEX idx_flows_dedup_key ON flows(dedup_key) WHERE dedup_key IS NOT NULL;`,
+	// Migration 5: the unique partial index on dedup_key made the payload
+	// fingerprint a global identity, so two genuinely identical records — the same
+	// flow reported twice, or the same 5-tuple on two unconfigured interfaces —
+	// could not both be stored. Duplicate suppression is a decision the writer
+	// makes against configured topology, not a constraint the table enforces, so
+	// the index becomes an ordinary lookup index. Existing rows keep their keys;
+	// rows already collapsed by the old constraint cannot be recovered.
+	`DROP INDEX IF EXISTS idx_flows_dedup_key;
+	CREATE INDEX idx_flows_dedup_key_lookup ON flows(dedup_key) WHERE dedup_key IS NOT NULL;`,
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {

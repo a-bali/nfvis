@@ -79,23 +79,65 @@ type DatabaseConfig struct {
 }
 
 // DedupConfig controls duplicate record suppression.
+//
+// Both mechanisms are inert until the operator states the topology they are
+// supposed to exploit: a payload-level match alone is not evidence that two
+// records are the same packet. No topology configured therefore means every
+// record is stored, which is the only lossless default.
 type DedupConfig struct {
 	// ParentChild collapses the parent-interface and VLAN-child copies of one
-	// frame. ng_netflow exports one record per interface node, so a tagged frame
-	// appears twice, differing only in input_if/output_if.
+	// frame. A copy is only collapsed when the exporter and both interface
+	// numbers appear in ParentChildLinks; ng_netflow exports one record per
+	// interface node, but which node is a parent of which is site knowledge.
 	ParentChild bool `yaml:"parent_child"`
+	// ParentChildLinks lists the per-exporter interface pairs that are allowed
+	// to collapse. Records on the same interface, on an interface that is not
+	// part of a link, or on a pair belonging to another exporter are always
+	// stored separately.
+	ParentChildLinks []ParentChildLink `yaml:"parent_child_links"`
 	// NAT suppresses the post-NAT copy of a forwarded packet when its pre-NAT
-	// mate has been seen. It requires WANAddresses: the firewall's own addresses
-	// on the NAT boundary. Without them it stays off, because the firewall's own
-	// WAN-sourced traffic (its DNS, NTP, ...) is genuine and must not be dropped.
+	// mate has been seen. It requires both WANAddresses and an Exporters entry
+	// for the firewall that reports both views: without them there is no way to
+	// tell a post-NAT copy from an unrelated record that merely shares its
+	// counters. Off by default.
 	NAT NATConfig `yaml:"nat"`
 }
 
+// ParentChildLink authorizes collapsing one interface node's copy of a frame
+// into its parent's. The parent record survives: it carries the pre-NAT source
+// identity that the measured export shows surviving.
+type ParentChildLink struct {
+	Exporter string `yaml:"exporter"`
+	Parent   uint32 `yaml:"parent"`
+	Child    uint32 `yaml:"child"`
+}
+
 // NATConfig configures pre-NAT/post-NAT duplicate suppression.
+//
+// The residual risk is documented in docs/operations.md: two unrelated flows
+// that share protocol, destination, counters and a sub-second export window are
+// indistinguishable from a NAT pair at the record level. This is why a pair is
+// only acted on when exactly one candidate exists, and why the whole mechanism
+// is opt-in per exporter.
 type NATConfig struct {
 	WANAddresses []string `yaml:"wan_addresses"`
+	// Exporters names the firewall that reports both views and the input
+	// interfaces each view is exported from. A record whose input interface is
+	// not one of these is never paired.
+	Exporters []NATExporter `yaml:"exporters"`
 	// Window bounds the distance between the two views' export timestamps.
 	Window Duration `yaml:"window"`
+}
+
+// NATExporter is one firewall's NAT topology.
+type NATExporter struct {
+	Address string `yaml:"address"`
+	// PreInterface is the input interface the pre-NAT (surviving) view is
+	// exported from.
+	PreInterface uint32 `yaml:"pre_interface"`
+	// PostInterface is the input interface the post-NAT (dropped) view is
+	// exported from.
+	PostInterface uint32 `yaml:"post_interface"`
 }
 
 // ResolutionTier keeps traffic totals at a fixed bucket width for a bounded
@@ -213,7 +255,9 @@ func Default() Config {
 				{Bucket: Duration(5 * time.Minute), Retention: Duration(30 * 24 * time.Hour)},
 			},
 			Dedup: DedupConfig{
-				ParentChild: true,
+				// Both mechanisms need declared topology; off until the operator
+				// supplies it, so the default is lossless.
+				ParentChild: false,
 				NAT:         NATConfig{Window: Duration(2 * time.Second)},
 			},
 		},
@@ -380,6 +424,10 @@ func (c Config) Validate() error {
 		}
 	}
 
+	if err := c.Database.Dedup.Validate(); err != nil {
+		return err
+	}
+
 	// Track every CIDR+direction combination. Identical rules with the same
 	// VLAN are allowed; conflicting duplicates are not.
 	seenRules := make(map[string]int32)
@@ -402,6 +450,53 @@ func (c Config) Validate() error {
 				return fmt.Errorf("vlan_rules[%d]: conflicting VLAN %d and %d for %s %s", i, old, rule.VLAN, prefix, dir)
 			}
 			seenRules[key] = rule.VLAN
+		}
+	}
+	return nil
+}
+
+// Validate checks the dedup configuration. It runs at startup so a topology
+// mistake is reported instead of silently disabling or misapplying suppression.
+func (d DedupConfig) Validate() error {
+	seenLinks := make(map[string]struct{}, len(d.ParentChildLinks))
+	for i, l := range d.ParentChildLinks {
+		if strings.TrimSpace(l.Exporter) == "" {
+			return fmt.Errorf("database.dedup.parent_child_links[%d].exporter is required", i)
+		}
+		if l.Parent == 0 || l.Child == 0 {
+			return fmt.Errorf("database.dedup.parent_child_links[%d]: parent and child must be non-zero interface indexes", i)
+		}
+		if l.Parent == l.Child {
+			return fmt.Errorf("database.dedup.parent_child_links[%d]: parent and child are both %d", i, l.Parent)
+		}
+		key := fmt.Sprintf("%s|%d|%d", l.Exporter, l.Parent, l.Child)
+		if _, ok := seenLinks[key]; ok {
+			return fmt.Errorf("database.dedup.parent_child_links[%d]: duplicate link %s %d->%d", i, l.Exporter, l.Parent, l.Child)
+		}
+		seenLinks[key] = struct{}{}
+	}
+	if d.ParentChild && len(d.ParentChildLinks) == 0 {
+		// Storing every record is the safe behaviour, but a switch that silently
+		// does nothing is a setting mistake worth reporting at startup.
+		return errors.New("database.dedup.parent_child requires at least one database.dedup.parent_child_links entry: without a declared interface link no two records can be proven to be copies, so every record is stored")
+	}
+	if len(d.NAT.WANAddresses) > 0 && len(d.NAT.Exporters) == 0 {
+		return errors.New("database.dedup.nat.wan_addresses requires database.dedup.nat.exporters entries: without the firewall's pre/post-NAT input interfaces no pair can be proven, so NAT suppression stays off")
+	}
+	seenExporters := make(map[string]struct{}, len(d.NAT.Exporters))
+	for i, e := range d.NAT.Exporters {
+		if strings.TrimSpace(e.Address) == "" {
+			return fmt.Errorf("database.dedup.nat.exporters[%d].address is required", i)
+		}
+		if _, ok := seenExporters[e.Address]; ok {
+			return fmt.Errorf("database.dedup.nat.exporters[%d]: duplicate exporter %s", i, e.Address)
+		}
+		seenExporters[e.Address] = struct{}{}
+		if e.PreInterface == 0 || e.PostInterface == 0 {
+			return fmt.Errorf("database.dedup.nat.exporters[%d]: pre_interface and post_interface must be non-zero", i)
+		}
+		if e.PreInterface == e.PostInterface {
+			return fmt.Errorf("database.dedup.nat.exporters[%d]: pre_interface and post_interface are both %d", i, e.PreInterface)
 		}
 	}
 	return nil
