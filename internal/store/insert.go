@@ -106,20 +106,45 @@ func (a *batchAggregates) add(f model.Flow) { a.apply(f, 1) }
 // arithmetic is exact even when the affected hour's raw rows are partly pruned.
 func (a *batchAggregates) sub(f model.Flow) { a.apply(f, -1) }
 
-// replace applies the net effect of rewriting one stored row into another: the
-// non-interface fields are equal by construction, so their buckets cancel and
-// only the interface buckets move.
-func (a *batchAggregates) replace(old, current model.Flow) {
-	a.sub(old)
-	a.add(current)
+// moveInterfaces applies the net effect of rewriting only a stored row's
+// interface columns, which is exactly what updateFlowSQL does. The other
+// families are untouched because every field they key on is unchanged. Keeping
+// this separate from sub+add is what stops the accumulator from claiming a
+// contribution the stored row does not have: a promotion once subtracted the
+// child's VLAN and sampling contribution and added the parent's while the row
+// itself kept the child's values.
+func (a *batchAggregates) moveInterfaces(old, current model.Flow) {
+	adjust := func(index uint32, label, direction string, sign int64, hour int64) {
+		key := ifaceKey{hour: hour, exporter: current.Exporter, ifIndex: index, direction: direction}
+		cc := bucket(a.iface, key)
+		if sign > 0 && cc.label == "" && label != "" {
+			cc.label = label
+		}
+		cc.accumulate(current, index == 0, sign)
+	}
+	oldHour, newHour := flowHourMS(old), flowHourMS(current)
+	adjust(old.InputIf, old.InputLabel, model.DirectionIngress, -1, oldHour)
+	adjust(old.OutputIf, old.OutputLabel, model.DirectionEgress, -1, oldHour)
+	adjust(current.InputIf, current.InputLabel, model.DirectionIngress, 1, newHour)
+	adjust(current.OutputIf, current.OutputLabel, model.DirectionEgress, 1, newHour)
 }
 
-func (a *batchAggregates) apply(f model.Flow, sign int64) {
+// flowHourMS is the hour an aggregate bucket for f belongs to: the exported end
+// time when there is one, otherwise the receipt time.
+func flowHourMS(f model.Flow) int64 {
 	end := f.EndMS
 	if end <= 0 {
 		end = f.ReceivedAtMS
 	}
-	hour := (end / hourMS) * hourMS
+	return (end / hourMS) * hourMS
+}
+
+func (a *batchAggregates) apply(f model.Flow, sign int64) {
+	hour := flowHourMS(f)
+	end := f.EndMS
+	if end <= 0 {
+		end = f.ReceivedAtMS
+	}
 
 	bucket(a.exporter, exporterKey{hour: hour, exporter: f.Exporter}).accumulate(f, false, sign)
 
@@ -267,7 +292,9 @@ func (s *Store) InsertBatchResult(ctx context.Context, flows []model.Flow) (Inse
 			if _, err := update.ExecContext(ctx, f.InputIf, f.InputLabel, f.OutputIf, f.OutputLabel, action.id); err != nil {
 				return res, fmt.Errorf("promote duplicate flow: %w", err)
 			}
-			aggs.replace(action.stored, *f)
+			// Only the interface columns are rewritten, so only agg_interface
+			// moves. Every other family is keyed by fields the stored row keeps.
+			aggs.moveInterfaces(action.stored, *f)
 			res.IDs[i] = action.id
 			res.Merged++
 			continue

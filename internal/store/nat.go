@@ -47,20 +47,68 @@ type dedupAction struct {
 }
 
 // storedColumns is the column list needed to subtract a stored row from every
-// aggregate family.
-const storedColumns = `id, exporter, end_ms, received_ms, input_if, input_label,
-	output_if, output_label, src_addr, dst_addr, src_vlan, dst_vlan, protocol,
-	bytes, packets, sampled`
+// aggregate family and to prove that two records are the same observation.
+const storedColumns = `id, exporter, start_ms, end_ms, received_ms, input_if, input_label,
+	output_if, output_label, src_addr, dst_addr, src_port, dst_port, protocol, tcp_flags,
+	src_tos, dst_tos, src_as, dst_as, src_vlan, dst_vlan, src_vlan_source, dst_vlan_source,
+	bytes, packets, sampled, sampling_interval, sampling_algorithm, sampling_source,
+	direction, direction_known`
 
 func scanStoredRow(scanner interface{ Scan(...any) error }) (int64, model.Flow, error) {
 	var (
 		id int64
 		f  model.Flow
 	)
-	err := scanner.Scan(&id, &f.Exporter, &f.EndMS, &f.ReceivedAtMS, &f.InputIf, &f.InputLabel,
-		&f.OutputIf, &f.OutputLabel, &f.SrcAddr, &f.DstAddr, &f.SrcVLAN, &f.DstVLAN,
-		&f.Protocol, &f.Bytes, &f.Packets, &f.Sampled)
+	err := scanner.Scan(&id, &f.Exporter, &f.StartMS, &f.EndMS, &f.ReceivedAtMS,
+		&f.InputIf, &f.InputLabel, &f.OutputIf, &f.OutputLabel,
+		&f.SrcAddr, &f.DstAddr, &f.SrcPort, &f.DstPort, &f.Protocol, &f.TCPFlags,
+		&f.SrcTOS, &f.DstTOS, &f.SrcAS, &f.DstAS, &f.SrcVLAN, &f.DstVLAN,
+		&f.SrcVLANSource, &f.DstVLANSource, &f.Bytes, &f.Packets, &f.Sampled,
+		&f.SamplingInterval, &f.SamplingAlgorithm, &f.SamplingSource,
+		&f.Direction, &f.DirectionKnown)
 	return id, f, err
+}
+
+// sameFrame reports whether two records may stand in for one another when only
+// the interface columns of the stored row are rewritten in place.
+//
+// Promotion issues UPDATE flows SET input_if=..., output_if=... — nothing else —
+// so every other column of the stored row survives. If any of them differs
+// between the two records, the surviving row would report the child's values
+// while the aggregates (which are moved) describe the parent's. Requiring the
+// non-interface fields to be equal is therefore not pedantry: it is what makes
+// "the aggregates describe the stored rows" true.
+//
+// The aggregate hour is compared too, because a record with no exported window
+// is bucketed by receipt time; two copies received in different hours belong to
+// different buckets and cannot be merged in place.
+func sameFrame(stored, incoming *model.Flow) bool {
+	return stored.StartMS == incoming.StartMS &&
+		stored.EndMS == incoming.EndMS &&
+		stored.SrcAddr == incoming.SrcAddr &&
+		stored.DstAddr == incoming.DstAddr &&
+		stored.SrcPort == incoming.SrcPort &&
+		stored.DstPort == incoming.DstPort &&
+		stored.Protocol == incoming.Protocol &&
+		stored.TCPFlags == incoming.TCPFlags &&
+		stored.SrcTOS == incoming.SrcTOS &&
+		stored.DstTOS == incoming.DstTOS &&
+		stored.SrcAS == incoming.SrcAS &&
+		stored.DstAS == incoming.DstAS &&
+		stored.SrcVLAN == incoming.SrcVLAN &&
+		stored.DstVLAN == incoming.DstVLAN &&
+		stored.SrcVLANSource == incoming.SrcVLANSource &&
+		stored.DstVLANSource == incoming.DstVLANSource &&
+		stored.Bytes == incoming.Bytes &&
+		stored.Packets == incoming.Packets &&
+		stored.Sampled == incoming.Sampled &&
+		stored.SamplingInterval == incoming.SamplingInterval &&
+		stored.SamplingAlgorithm == incoming.SamplingAlgorithm &&
+		stored.SamplingSource == incoming.SamplingSource &&
+		stored.Direction == incoming.Direction &&
+		stored.DirectionKnown == incoming.DirectionKnown &&
+		stored.OutputIf == incoming.OutputIf &&
+		flowHourMS(*stored) == flowHourMS(*incoming)
 }
 
 // dedupEnabled reports whether any duplicate suppression is configured. When it
@@ -95,14 +143,16 @@ func (s *Store) dedupAction(ctx context.Context, tx *sql.Tx, f *model.Flow) (ded
 //   - the exporter and the two input interfaces are a configured link,
 //   - the records carry the same payload fingerprint (same exporter, export
 //     interval, endpoints, protocol and counters),
-//   - their output interfaces agree, and
+//   - they are the same observation in every column promotion does not rewrite
+//     (see sameFrame), and
 //   - exactly one stored row stands in the required relation to this record.
 //
 // Anything else — two different interfaces that are not a configured link, the
-// same interface twice, an exporter without links, several possible parents — is
-// stored as its own row. A record on an unconfigured interface (ifIndex 0
-// included) is never treated as a copy of anything and never blocks the pair it
-// happens to share a fingerprint with: it is simply not part of the link.
+// same interface twice, an exporter without links, several possible parents, or
+// two records that differ in any field the stored row would keep — is stored as
+// its own row. A record on an unconfigured interface (ifIndex 0 included) is
+// never treated as a copy of anything and never blocks the pair it happens to
+// share a fingerprint with: it is simply not part of the link.
 func (s *Store) parentChildAction(ctx context.Context, tx *sql.Tx, f *model.Flow) (dedupAction, error) {
 	key := flowDedupKey(f)
 	if key == nil || !s.pc.hasExporter(f.Exporter) {
@@ -125,8 +175,9 @@ func (s *Store) parentChildAction(ctx context.Context, tx *sql.Tx, f *model.Flow
 		if err != nil {
 			return dedupAction{}, fmt.Errorf("scan parent/child duplicate: %w", err)
 		}
-		if stored.OutputIf != f.OutputIf {
-			// A different egress path is not the same traversal.
+		if !sameFrame(&stored, f) {
+			// The stored row would keep its own values for a column that
+			// differs, so it is a different observation, not a copy.
 			continue
 		}
 		switch s.pc.relation(f.Exporter, stored.InputIf, f.InputIf) {

@@ -77,9 +77,15 @@ they can do anything. A matching payload is not evidence that two records
 describe the same packet, so:
 
 * `parent_child` collapses only pairs named in `parent_child_links`, per
-  exporter. Records on the same interface, on an unconfigured interface, on the
-  reverse order of an unconfigured pair, or for an exporter with no links are
-  always stored separately.
+  exporter, and only when the two records agree on **every** column that
+  promotion does not rewrite — VLANs and their sources, TOS, TCP flags, AS
+  numbers, sampling fields, direction, destination port and address, and the
+  aggregate hour. The payload fingerprint covers the 5-tuple and counters but not
+  those fields, so a differing VLAN or sampling flag would otherwise leave the
+  surviving row reporting the child's value while the aggregates moved to the
+  parent's. Records on the same interface, on an unconfigured interface, for an
+  exporter with no links, with an ambiguous parent, or differing in any of those
+  fields are stored separately.
 * `nat` drops a post-NAT copy only when the record's exporter and input
   interface are listed in `nat.exporters`, exactly **one** candidate mate exists
   with the opposite WAN/non-WAN source on the other configured interface, the
@@ -109,10 +115,12 @@ Known limitations, stated rather than hidden:
   table would destroy. The price is that a subtraction is only correct if the
   stored row it subtracts is the row that was added; that is why the writer reads
   back the stored row before acting on it.
-* **Interface promotion is exact but only for interfaces.** When a child copy is
-  promoted to its parent, the row keeps its id (so queued reverse-DNS lookups stay
-  attached) and only `agg_interface` moves. The other families are keyed by fields
-  the copies share, so they do not change.
+* **Interface promotion only moves interfaces.** When a child copy is promoted to
+  its parent, the row keeps its id (so queued reverse-DNS lookups stay attached)
+  and only `agg_interface` moves: the update rewrites `input_if`/`output_if` and
+  nothing else, so every other family is keyed by fields the stored row retains.
+  Because promotion cannot change those fields, parent/child collapse additionally
+  requires that both records agree on all of them (see above).
 
 ### Chart resolution tiers
 
