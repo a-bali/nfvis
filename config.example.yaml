@@ -25,7 +25,7 @@ database:
   # Dashboard queries read index pages rather than whole tables, so the smaller
   # map is usually the better trade; verify with /api/v1/timeseries latency.
   mmap_size_mb: 1024       # per connection; 0 disables mmap; max 2047
-  cache_size_mb: 128       # per connection; SQLite's own page cache
+  cache_size_mb: 128       # per connection, 1-4096; SQLite's own page cache (0 is rejected)
   # Duplicate suppression. Both mechanisms are inert until you declare the
   # topology they exploit: a matching payload alone is not evidence that two
   # records describe the same packet, so with nothing configured every record is
