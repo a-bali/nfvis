@@ -49,6 +49,8 @@ Important knobs:
 | `database.batch_size` | Flows per write transaction. Higher improves throughput and increases flush latency. |
 | `database.flush_interval` | Maximum time a partial batch waits before being written. |
 | `database.migration_timeout` | Startup budget for schema migrations. Default `30m`. Migrations that index or rewrite a large existing table take minutes; exceeding the budget rolls back, exits before serving, and crash-loops the workload. Raise it for a multi-GB database. |
+| `database.mmap_size_mb` | Ceiling on how much of the database SQLite maps **per connection**. Default `1024`; `0` disables memory mapping. Touched pages are charged to the container as file-backed memory, so this is the largest single contributor to reported memory for a big database. Values above `2047` are rejected: the SQLite build in use has `MAX_MMAP_SIZE=0x7fff0000` and would silently clamp them. |
+| `database.cache_size_mb` | SQLite's own page cache, held as anonymous memory that cannot be reclaimed. Default `128`, **per connection** — with the pool's eight connections a 128 MiB setting is up to ~1 GiB, which is why the process can report a gigabyte while the heap is small. Distinct from the OS page cache, which is reclaimable. |
 | `database.retention.raw` | How long individual flows stay queryable. |
 | `database.retention.hourly` | How long hourly aggregates stay queryable. Must be at least raw. |
 | `database.retention.cleanup_interval` | How often expired rows are swept. Default `1h`; a sweep also runs at startup. |
