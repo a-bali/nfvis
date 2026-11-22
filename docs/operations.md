@@ -71,6 +71,25 @@ Important knobs:
 | `vlan_rules[]` | CIDR → VLAN mapping, scoped to `src`, `dst`, or `both`. Longest prefix wins; exported VLAN wins over rules. |
 | `vlan_labels` | Optional VLAN ID → display name mapping used by the VLAN tab. Unlabeled IDs show as `VLAN <id>`. |
 
+### Migration progress in logs
+
+Migrations run inside `store.Open`, **before the HTTP listener is bound**, so the process cannot answer health checks for their duration and a container probe sees a refused connection. Each migration is therefore logged when it starts and when it commits, with elapsed time, followed by a summary:
+
+```text
+INFO migration budget timeout=20m0s
+INFO applying database migrations from=3 to=5 pending=2
+INFO applying migration version=4 of=5
+INFO migration applied version=4 elapsed=1m58.4s
+INFO applying migration version=5 of=5
+INFO migration applied version=5 elapsed=1m47.1s
+INFO database migrations complete schema=5 applied=2 elapsed=3m45.9s
+```
+
+If the startup log stops after `applying migration version=N` with no `migration applied` for that N, the index build is still running: it is slow, not hung, and the connection-refused probe is expected rather than a fault. Two consequences for deployment:
+
+- Give the workload a **`startupProbe` budget at least as long as `database.migration_timeout`**. A startup probe shorter than the migration budget reintroduces the crash loop the budget exists to prevent: kubelet kills the pod at the probe deadline, the transaction rolls back, and the next attempt starts over. A liveness probe measured in seconds against a migration measured in minutes is the same failure with less warning.
+- Migration cost scales with **existing rows**, not with the request budget, and the indexes dominate: on 12.3M rows migrations 4 and 5 took roughly 2 minutes each, and memory peaked near 3 GiB. Both grow with the table.
+
 ### Duplicate suppression and its residual risk
 
 Both mechanisms are **off by default** and both need the site's topology before

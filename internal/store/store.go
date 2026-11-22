@@ -4,7 +4,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"fmt"
+	"log/slog"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -106,7 +108,15 @@ func Open(cfg config.Config) (*Store, error) {
 	// default, because exceeding it rolls back and exits before serving.
 	migrateCtx, cancelMigrate := context.WithTimeout(context.Background(), cfg.Database.EffectiveMigrationTimeout())
 	defer cancelMigrate()
+	// Log the budget so an operator reading startup logs knows what will happen
+	// if a migration overruns, rather than discovering it as a crash loop.
+	slog.Info("migration budget", "timeout", cfg.Database.EffectiveMigrationTimeout().String())
 	if err := migrate(migrateCtx, db); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			slog.Error("migration exceeded its budget; the transaction was rolled back",
+				"timeout", cfg.Database.EffectiveMigrationTimeout().String(),
+				"hint", "raise database.migration_timeout")
+		}
 		_ = db.Close()
 		return nil, err
 	}

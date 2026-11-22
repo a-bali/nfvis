@@ -4,6 +4,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"log/slog"
 	"time"
 )
 
@@ -183,7 +184,20 @@ func migrate(ctx context.Context, db *sql.DB) error {
 	if current > schemaVersion {
 		return fmt.Errorf("database schema version %d is newer than supported version %d", current, schemaVersion)
 	}
+	if current == schemaVersion {
+		slog.Info("database schema is current", "version", current)
+		return nil
+	}
+	// Migrations run before the HTTP listener starts, so the process is deaf on
+	// its health port for the whole duration. Emitting progress is what lets an
+	// operator distinguish "indexing 12M rows" from "hung" — silence here cost a
+	// release once, when a 5-minute migration looked identical to a dead pod.
+	slog.Info("applying database migrations",
+		"from", current, "to", schemaVersion, "pending", schemaVersion-current)
+	started := time.Now()
 	for version := current + 1; version <= schemaVersion; version++ {
+		migrationStarted := time.Now()
+		slog.Info("applying migration", "version", version, "of", schemaVersion)
 		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
 			return fmt.Errorf("begin migration %d: %w", version, err)
@@ -200,6 +214,12 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if err := tx.Commit(); err != nil {
 			return fmt.Errorf("commit migration %d: %w", version, err)
 		}
+		slog.Info("migration applied",
+			"version", version, "elapsed", time.Since(migrationStarted).Round(time.Millisecond).String())
 	}
+	slog.Info("database migrations complete",
+		"schema", schemaVersion,
+		"applied", schemaVersion-current,
+		"elapsed", time.Since(started).Round(time.Millisecond).String())
 	return nil
 }
