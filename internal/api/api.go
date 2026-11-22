@@ -32,13 +32,17 @@ type Server struct {
 	log       *slog.Logger
 	version   string
 
+	// metrics records every API request so the System page can report response
+	// time and size distributions over the last 24 hours.
+	metrics *apiMetrics
+
 	server *http.Server
 }
 
 // New creates an API server.
 func New(cfg config.Config, st *store.Store, collector *ingest.Collector, log *slog.Logger, version string) *Server {
 
-	a := &Server{cfg: cfg, store: st, collector: collector, log: log, version: version}
+	a := &Server{cfg: cfg, store: st, collector: collector, log: log, version: version, metrics: newAPIMetrics()}
 	a.server = &http.Server{Addr: cfg.Listen.HTTP, Handler: a.Handler(), ReadHeaderTimeout: 5 * time.Second}
 	return a
 }
@@ -57,7 +61,30 @@ func (a *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/top", a.top)
 	mux.HandleFunc("GET /api/v1/flows", a.flows)
 	mux.Handle("/", a.static())
-	return a.recoverMiddleware(mux)
+	return a.recoverMiddleware(a.metricsMiddleware(mux))
+}
+
+// metricsMiddleware records duration and response size for every API request, so
+// the System page can report what the dashboard itself costs. Static assets are
+// skipped: they are served from the embedded FS with cache headers, and including
+// them would swamp the API distribution with fast, repetitive reads.
+func (a *Server) metricsMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !strings.HasPrefix(r.URL.Path, "/api/") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		start := time.Now()
+		rec := &recordingResponseWriter{ResponseWriter: w}
+		// Deferred so a handler that panics is still recorded. Without this the
+		// panic unrolls this frame before observe runs, and a 500 caused by a
+		// panic is invisible in requests_total — the one case an operator most
+		// wants to see in the counters.
+		defer func() {
+			a.metrics.observe(time.Since(start), rec.bytes)
+		}()
+		next.ServeHTTP(rec, r)
+	})
 }
 
 // ListenAndServe starts the configured HTTP listener.
@@ -253,6 +280,7 @@ type systemResponse struct {
 		CleanupIntervalSeconds float64 `json:"cleanup_interval_seconds"`
 	} `json:"retention"`
 	Sweep ingest.RetentionState `json:"sweep"`
+	API   APIMetricsSnapshot    `json:"api"`
 }
 
 type healthResponse struct {
@@ -316,6 +344,9 @@ func (a *Server) system(w http.ResponseWriter, r *http.Request) {
 	response.Retention.HourlySeconds = time.Duration(a.cfg.Database.Retention.Hourly).Seconds()
 	response.Retention.CleanupIntervalSeconds = time.Duration(a.cfg.Database.Retention.CleanupInterval).Seconds()
 	response.Sweep = a.collector.RetentionStatus()
+	// Snapshot before this response is written, so the figures describe the
+	// requests that preceded this one rather than including it.
+	response.API = a.metrics.snapshot()
 	writeJSON(w, http.StatusOK, response)
 }
 
@@ -715,8 +746,18 @@ func (a *Server) labelSplitSeries(ctx context.Context, result *store.SplitResult
 		return
 	}
 	for i := range result.Series {
-		if found := names[result.Series[i].Key]; len(found) > 0 && !result.Series[i].Other {
-			result.Series[i].Label = strings.Join(found, ", ")
+		band := &result.Series[i]
+		if band.Other {
+			continue
+		}
+		// One name per host: HistoricalNames returns every name observed for the
+		// IP inside the range, most recent first. Joining them all produced
+		// "a.example, b.example" in the legend for a host whose PTR record
+		// changed during the window, which reads as two hosts. The band is one
+		// host, so it takes the most recent name; the address stays available in
+		// the row tooltip.
+		if found := names[band.Key]; len(found) > 0 && found[0] != "" {
+			band.Label = found[0]
 		}
 	}
 }
