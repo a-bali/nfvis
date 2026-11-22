@@ -114,6 +114,17 @@ h1 { margin: 0; font-size: 26px; letter-spacing: -.02em; }
 .segmented button { background: #111a29; color: #94a3b8; border: 0; padding: 8px 12px; }
 .segmented button + button { border-left: 1px solid #263449; }
 .segmented button.active { background: #16324a; color: #7dd3fc; }
+/* A segmented control placed in a panel header must still show which option is
+   selected. `.panel-head-right button` gives every button the same blue
+   background and text, which made all three options of the chart-metric toggle
+   look active at once. Reset the unselected ones to the segmented palette. */
+.panel-head-right .segmented { border-color: #275473; }
+.panel-head-right .segmented button {
+  background: #111a29; color: #94a3b8; border: 0; border-radius: 0; padding: 6px 11px; font-size: 12px;
+}
+.panel-head-right .segmented button + button { border-left: 1px solid #275473; }
+.panel-head-right .segmented button.active { background: #16324a; color: #7dd3fc; }
+.panel-head-right .segmented button:not(.active):hover { background: #16233a; color: #cbd5e1; }
 
 .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr)); gap: 14px; margin-bottom: 18px; }
 .card { background: #111a29; border: 1px solid #1e293b; border-radius: 12px; padding: 8px 12px; display: flex; flex-direction: column; gap: 3px; }
@@ -135,6 +146,15 @@ h1 { margin: 0; font-size: 26px; letter-spacing: -.02em; }
 .system-actions button:hover:not(:disabled) { border-color: #38bdf8; }
 .system-actions button:disabled { opacity: .45; cursor: default; }
 .panel-head-right button { background: #16324a; color: #7dd3fc; border: 1px solid #275473; border-radius: 7px; padding: 6px 11px; font-size: 12px; }
+/* Panel headings are optionally a toggle. Keep the heading's own typography and
+   make the whole title the hit area, with a hover cue so it reads as clickable. */
+.panel-head-left .panel-title-toggle {
+  background: none; border: 0; border-radius: 6px; padding: 0 4px; margin: 0;
+  color: inherit; font: inherit; cursor: pointer; text-align: left;
+}
+.panel-head-left .panel-title-toggle h2 { margin: 0; }
+.panel-head-left .panel-title-toggle:hover h2 { color: #7dd3fc; }
+.panel-head-left .panel-title-toggle:focus-visible { outline: 2px solid #38bdf8; outline-offset: 3px; }
 .panel-head-right button:hover:not(:disabled) { border-color: #38bdf8; }
 .panel-head-right button:disabled { opacity: .45; cursor: default; }
 .panel-note { color: #64748b; font-size: 11px; line-height: 1.5; margin: 12px 0 0; }
@@ -214,6 +234,17 @@ button.chart-legend-row.toggle:focus-visible { outline: 1px solid #38bdf8; outli
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
   gap: 8px; font-size: 12px; color: #cbd5e1; letter-spacing: 0.2px;
   background: rgba(10, 15, 25, 0.42); border-radius: 8px; backdrop-filter: blur(1px);
+  pointer-events: none;
+}
+/* The flows table gets the same treatment as the chart: dim the stale rows and
+   overlay a spinner while a deliberate change (a filter, page or sort) loads.
+   A polling refresh does not set it, so ordinary updates never flash. */
+.table-loading-wrap { position: relative; }
+.table-loading-wrap.busy .table-wrap { opacity: .35; transition: opacity .12s ease; }
+.table-loading {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  gap: 8px; font-size: 12px; color: #cbd5e1; letter-spacing: 0.2px;
+  background: rgba(10, 15, 25, 0.28); border-radius: 8px;
   pointer-events: none;
 }
 .spinner {

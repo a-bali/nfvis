@@ -420,6 +420,11 @@ export default function App() {
   const [recentTraffic, setRecentTraffic] = useState<Timeseries[]>([]);
   const [flowSeries, setFlowSeries] = useState<Timeseries | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
+  // The flows table shares the chart's request, but not its spinner: a polling
+  // refresh must not flash the table, while a deliberate change (a filter, the
+  // page, the sort) should show that the rows on screen are stale. `chartLoading`
+  // cannot serve this because it is cleared for polling by design.
+  const [flowsLoading, setFlowsLoading] = useState(false);
   const [showFlowChart, setShowFlowChart] = useState(true);
   const [menuOpen, setMenuOpen] = useState(false);
   useEffect(() => {
@@ -555,6 +560,8 @@ export default function App() {
     nav.splitBy,
   ]);
   const loadedQueryKey = useRef(chartQueryKey);
+  const loadedFlowQueryKey = useRef<string | null>(null);
+  const flowReqSeq = useRef(0);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -564,6 +571,19 @@ export default function App() {
     setAggregateNotice('');
     const showSpinner = chartView && loadedQueryKey.current !== chartQueryKey;
     if (showSpinner) setChartLoading(true);
+    // Deliberate changes to what the flows table shows — filters, page, sort —
+    // set a spinner on the rows. A polling tick also refetches, but it must not
+    // dim a table whose contents are not changing, so this keys off the same
+    // query key as the chart rather than off every fetch.
+    const flowQueryKey = JSON.stringify([nav.view, nav.rangeKey, nav.customFrom, nav.customTo,
+      nav.flowFilters, nav.flowPage, nav.direction, flowSorting.sort]);
+    const showFlowSpinner = nav.view === 'flows' && loadedFlowQueryKey.current !== flowQueryKey;
+    if (showFlowSpinner) setFlowsLoading(true);
+    // Clearing on success alone would leave the spinner up forever when a
+    // request is aborted (the effect re-runs on every poll), because the abort
+    // path skips the `!cancelled` branch. The sequence number makes only the
+    // newest request responsible for clearing it.
+    const flowSeq = ++flowReqSeq.current;
 
     const load = async () => {
       try {
@@ -627,9 +647,14 @@ export default function App() {
       } finally {
         if (!cancelled) {
           loadedQueryKey.current = chartQueryKey;
+          if (nav.view === 'flows') loadedFlowQueryKey.current = flowQueryKey;
           setChartLoading(false);
           setSettled((v) => v + 1);
         }
+        // Unconditional: whatever happened to this request, if it is still the
+        // newest one it owns the spinner, and leaving it set would dim the table
+        // until the next deliberate change.
+        if (flowReqSeq.current === flowSeq) setFlowsLoading(false);
       }
     };
     void load();
@@ -1071,6 +1096,7 @@ export default function App() {
           <>
           <Panel
             title="Flow traffic"
+            titleToggle={{ expanded: showFlowChart, onToggle: () => setShowFlowChart((v) => !v) }}
             compact={!showFlowChart}
             leading={<button
               className="chart-chevron"
@@ -1121,7 +1147,15 @@ export default function App() {
               <input className="port-input" aria-label="source port" placeholder="src port" inputMode="numeric" value={nav.flowFilters.src_port ?? ''} onChange={(e) => setFlowFilter('src_port', e.target.value)} />
               <input className="port-input" aria-label="destination port" placeholder="dst port" inputMode="numeric" value={nav.flowFilters.dst_port ?? ''} onChange={(e) => setFlowFilter('dst_port', e.target.value)} />
             </div>
-            {flows?.rows.length ? <FlowTable flows={flows.rows} onSelect={setSelectedFlow} sort={flowSorting.sort} onSort={(key, numeric) => { flowSorting.toggle(key, numeric); updateNav({ flowPage: 0 }); }} /> : <Empty title="No individual flows" detail="Widen the range or clear filters. Older periods may only have hourly aggregates." />}
+            <div className={`table-loading-wrap${flowsLoading ? ' busy' : ''}`} aria-busy={flowsLoading}>
+              {flows?.rows.length ? <FlowTable flows={flows.rows} onSelect={setSelectedFlow} sort={flowSorting.sort} onSort={(key, numeric) => { flowSorting.toggle(key, numeric); updateNav({ flowPage: 0 }); }} /> : <Empty title="No individual flows" detail="Widen the range or clear filters. Older periods may only have hourly aggregates." />}
+              {flowsLoading && (
+                <div className="table-loading" role="status" aria-live="polite">
+                  <span className="spinner" aria-hidden="true" />
+                  <span>Loading flows</span>
+                </div>
+              )}
+            </div>
             {flows && flows.total > 100 && (
               <div className="pager">
                 <button disabled={nav.flowPage === 0} onClick={() => updateNav((prev) => ({ ...prev, flowPage: prev.flowPage - 1 }), 'push')}>Previous</button>
@@ -1200,6 +1234,55 @@ export default function App() {
                 <p className="panel-note">
                   Rows are deleted for flows older than the raw retention, hourly aggregates and DNS history older than the hourly retention,
                   and chart tiers older than their own retention. Deleted pages are reused by new data, so the database file does not shrink.
+                </p>
+              </Panel>
+
+              <Panel
+                title="API requests"
+                subtitle={`last ${fmtDays(system.api.window_seconds)} · ${fmtNumber(system.api.requests)} in window`}
+              >
+                <div className="stat-grid">
+                  <Stat
+                    label="Requests"
+                    value={fmtNumber(system.api.requests)}
+                    hint={`${fmtNumber(system.api.requests_total)} since start`}
+                  />
+                  <Stat label="Window" value={fmtDays(system.api.window_seconds)} hint="rolling, in memory" />
+                  <Stat
+                    label="Response time avg"
+                    value={fmtElapsed(system.api.duration_ms.avg)}
+                    hint="mean over the window"
+                  />
+                  <Stat
+                    label="Response time median"
+                    value={fmtElapsed(system.api.duration_ms.median)}
+                    hint="50th percentile"
+                  />
+                  <Stat
+                    label="Response time p90"
+                    value={fmtElapsed(system.api.duration_ms.p90)}
+                    hint="9 in 10 requests are faster"
+                  />
+                  <Stat
+                    label="Response size avg"
+                    value={fmtBytes(system.api.size_bytes.avg)}
+                    hint="mean body size"
+                  />
+                  <Stat
+                    label="Response size median"
+                    value={fmtBytes(system.api.size_bytes.median)}
+                    hint="50th percentile"
+                  />
+                  <Stat
+                    label="Response size p90"
+                    value={fmtBytes(system.api.size_bytes.p90)}
+                    hint="9 in 10 responses are smaller"
+                  />
+                </div>
+                <p className="panel-note">
+                  Measured in this process for requests to <code>/api/</code> only — static assets are excluded, since they would
+                  dominate the distribution. Samples are held in memory and cover the last 24 hours or the most recent
+                  100,000 requests, whichever is smaller, so the figures restart with the collector.
                 </p>
               </Panel>
 
@@ -1395,11 +1478,26 @@ function TimeWindowPicker({ range, rangeKey, customFrom, customTo, onPreset, onA
   </div>;
 }
 
-function Panel({ title, subtitle, action, leading, children, wide, compact }: { title: string; subtitle?: string; action?: ReactNode; leading?: ReactNode; children: ReactNode; wide?: boolean; compact?: boolean }) {
+function Panel({ title, subtitle, action, leading, children, wide, compact, titleToggle }: { title: string; subtitle?: string; action?: ReactNode; leading?: ReactNode; children: ReactNode; wide?: boolean; compact?: boolean; titleToggle?: { expanded: boolean; onToggle: () => void } }) {
   return (
     <section className={`panel${wide ? ' wide' : ''}${compact ? ' compact' : ''}`}>
       <div className="panel-head">
-        <div className="panel-head-left">{leading}<h2>{title}</h2></div>
+        <div className="panel-head-left">{leading}
+          {titleToggle ? (
+            // The heading toggles the same state as the chevron beside it, so the
+            // obvious thing to click does what the reader expects. It is a real
+            // button for keyboard and screen-reader use, and the chevron remains
+            // as the visual affordance.
+            <button
+              className="panel-title-toggle"
+              type="button"
+              aria-expanded={titleToggle.expanded}
+              aria-label={titleToggle.expanded ? `Collapse ${title}` : `Expand ${title}`}
+              title={titleToggle.expanded ? 'Collapse' : 'Expand'}
+              onClick={titleToggle.onToggle}
+            ><h2>{title}</h2></button>
+          ) : <h2>{title}</h2>}
+        </div>
         <div className="panel-head-right">
           {subtitle && <span>{subtitle}</span>}
           {action}

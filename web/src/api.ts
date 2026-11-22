@@ -59,6 +59,13 @@ export type SystemStats = {
     interval_ms: number;
     next_run_ms: number;
   };
+  api: {
+    window_seconds: number;
+    requests: number;
+    requests_total: number;
+    duration_ms: { avg: number; median: number; p90: number; max: number };
+    size_bytes: { avg: number; median: number; p90: number; max: number };
+  };
 };
 
 export type RetentionRunResult = { sweep: SystemStats['sweep'] };
