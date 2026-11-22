@@ -82,7 +82,41 @@ type DatabaseConfig struct {
 	// Dedup collapses records OPNsense's ng_netflow emits more than once for the
 	// same packet.
 	Dedup DedupConfig `yaml:"dedup"`
+	// MmapSizeMB bounds how much of the database file SQLite maps into the
+	// process address space. Touched pages are charged to the container as
+	// file-backed memory, so this single value dominates what Kubernetes reports
+	// for a large database: at the previous hard-coded 1024 MiB a 7 GiB database
+	// kept ~1 GiB resident. Zero disables mmap, which costs 10-20% on wide scans
+	// and saves the whole mapping. Absent uses DefaultMmapSizeMB.
+	MmapSizeMB *int `yaml:"mmap_size_mb"`
+	// CacheSizeMB is SQLite's own page cache, held as anonymous (unreclaimable)
+	// memory rather than page cache. The previous hard-coded 128 MiB was 100+ MiB
+	// of the process's heap on top of a working set that is otherwise reclaimable.
+	// Absent uses DefaultCacheSizeMB.
+	CacheSizeMB *int `yaml:"cache_size_mb"`
 }
+
+// Defaults for the SQLite memory pragmas. They reproduce the values that used to
+// be hard-coded in store.Open, so an upgrade without explicit config changes
+// nothing.
+//
+// Both are PER CONNECTION. store.Open sets SetMaxOpenConns(8), so a 128 MiB
+// cache_size is up to eight of them — ~1 GiB of anonymous memory — and the mmap
+// limit applies to each pooled connection separately. Measured on a 282 MB
+// database with eight concurrent readers: cache 128 MiB gave 1933 MB RssAnon,
+// cache 16 MiB gave 257 MB. That per-connection multiplication is why the
+// default looks modest while the process still reports a gigabyte.
+const (
+	DefaultMmapSizeMB  = 1024
+	DefaultCacheSizeMB = 128
+
+	// maxMmapSizeMB is not a taste limit: the vendored modernc.org/sqlite is
+	// built with MAX_MMAP_SIZE=0x7fff0000, so any request above ~2047 MiB is
+	// silently clamped to that value rather than honoured. Accepting 8192 would
+	// validate and then quietly apply 2047, which is worse than refusing.
+	maxMmapSizeMB  = 2047
+	maxCacheSizeMB = 4096
+)
 
 // DefaultMigrationTimeout is the ceiling for the whole migration run when
 // database.migration_timeout is unset. Migrations are one-time work at startup;
@@ -95,6 +129,29 @@ func (d DatabaseConfig) EffectiveMigrationTimeout() time.Duration {
 		return d.MigrationTimeout.Duration()
 	}
 	return DefaultMigrationTimeout
+}
+
+// intPtr returns a pointer to v, for optional config fields where an explicit
+// zero is meaningful and therefore distinct from absence.
+func intPtr(v int) *int { return &v }
+
+// EffectiveMmapSizeMB returns the configured mmap ceiling in MiB. An absent
+// value takes the default; an explicit 0 disables mmap, which is a meaningful
+// configuration rather than a missing one — hence the pointer.
+func (d DatabaseConfig) EffectiveMmapSizeMB() int {
+	if d.MmapSizeMB == nil {
+		return DefaultMmapSizeMB
+	}
+	return *d.MmapSizeMB
+}
+
+// EffectiveCacheSizeMB returns the configured SQLite page-cache size in MiB, or
+// the default when absent.
+func (d DatabaseConfig) EffectiveCacheSizeMB() int {
+	if d.CacheSizeMB == nil {
+		return DefaultCacheSizeMB
+	}
+	return *d.CacheSizeMB
 }
 
 // DedupConfig controls duplicate record suppression.
@@ -274,6 +331,8 @@ func Default() Config {
 				{Bucket: Duration(5 * time.Minute), Retention: Duration(30 * 24 * time.Hour)},
 			},
 			MigrationTimeout: Duration(DefaultMigrationTimeout),
+			MmapSizeMB:       intPtr(DefaultMmapSizeMB),
+			CacheSizeMB:      intPtr(DefaultCacheSizeMB),
 			Dedup: DedupConfig{
 				// Both mechanisms need declared topology; off until the operator
 				// supplies it, so the default is lossless.
@@ -347,6 +406,16 @@ func (c Config) Validate() error {
 	}
 	if d := c.Database.MigrationTimeout.Duration(); d < 0 || (d > 0 && d < 5*time.Second) || d > 4*time.Hour {
 		return errors.New("database.migration_timeout must be 0 (default) or between 5s and 4h")
+	}
+	if v := c.Database.MmapSizeMB; v != nil {
+		if *v < 0 || *v > maxMmapSizeMB {
+			return fmt.Errorf("database.mmap_size_mb must be between 0 (disabled) and %d", maxMmapSizeMB)
+		}
+	}
+	if v := c.Database.CacheSizeMB; v != nil {
+		if *v < 1 || *v > maxCacheSizeMB {
+			return fmt.Errorf("database.cache_size_mb must be between 1 and %d", maxCacheSizeMB)
+		}
 	}
 	r := c.Database.Retention
 	if r.Raw.Duration() <= 0 || r.Hourly.Duration() <= 0 {

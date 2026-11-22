@@ -11,6 +11,21 @@ database:
   # minutes, and exceeding this rolls the migration back and exits before the
   # service serves. Default 30m; raise it for a very large existing database.
   migration_timeout: 30m
+  # SQLite memory. These two values, not the data volume, decide what a container
+  # runtime reports as this process's memory: mmap'd database pages are charged as
+  # file-backed memory, and the page cache is unreclaimable heap.
+  #
+  # BOTH ARE PER CONNECTION, and the pool holds eight. A 128 MiB cache_size is
+  # therefore up to ~1 GiB of anonymous memory; eight concurrent readers measured
+  # 1933 MB RssAnon at 128 and 257 MB at 16. That multiplication is why the
+  # defaults look modest while the process reports a gigabyte.
+  #
+  # Measured on a 1.2 GB database at production row width, 1024/128 kept 1156 MiB
+  # resident where 256/16 kept 285 MiB, costing 11-21% on full-table scans.
+  # Dashboard queries read index pages rather than whole tables, so the smaller
+  # map is usually the better trade; verify with /api/v1/timeseries latency.
+  mmap_size_mb: 1024       # per connection; 0 disables mmap; max 2047
+  cache_size_mb: 128       # per connection; SQLite's own page cache
   # Duplicate suppression. Both mechanisms are inert until you declare the
   # topology they exploit: a matching payload alone is not evidence that two
   # records describe the same packet, so with nothing configured every record is
