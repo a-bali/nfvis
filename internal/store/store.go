@@ -73,6 +73,16 @@ func Open(cfg config.Config) (*Store, error) {
 		return nil, fmt.Errorf("create database directory: %w", err)
 	}
 	q := url.Values{}
+	// Every transaction this process opens writes. A deferred transaction whose
+	// first statement is a read — which is what the dedup lookup is — cannot
+	// honour busy_timeout when it later tries to upgrade to a write: SQLite
+	// returns SQLITE_BUSY immediately instead of waiting, because the snapshot it
+	// read from is already stale. With eight DNS writers committing alongside the
+	// ingest batch this produced periodic "database is locked" failures that
+	// discarded whole batches. Asking for BEGIN IMMEDIATE makes each transaction
+	// take the write lock up front, where busy_timeout does apply, so contention
+	// waits and succeeds instead of failing instantly.
+	q.Set("_txlock", "immediate")
 	for _, pragma := range []string{
 		"busy_timeout(5000)",
 		"journal_mode(WAL)",

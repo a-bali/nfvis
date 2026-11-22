@@ -201,6 +201,18 @@ func (c *Counters) setError(err error) {
 	}
 }
 
+// setSuccess records a successful write. It clears lastError: a transient lock
+// or timeout that recovered must not keep being reported. DBErrors is a
+// cumulative counter and still shows that something happened, so clearing the
+// message loses no history, while leaving it set made a recovered instance
+// report an error forever — the UI showed "database is locked" long after the
+// last occurrence.
+func (c *Counters) setSuccess() {
+	c.lastError.Store("")
+	c.LastSuccessMS.Store(time.Now().UnixMilli())
+	c.Healthy.Store(true)
+}
+
 type packetJob struct {
 	buf      []byte
 	data     []byte
@@ -477,8 +489,7 @@ func (c *Collector) insertWithRetry(ctx context.Context, batch []model.Flow) err
 			if res.Merged > 0 {
 				c.counters.FlowsDuplicates.Add(uint64(res.Merged))
 			}
-			c.counters.LastSuccessMS.Store(time.Now().UnixMilli())
-			c.counters.Healthy.Store(true)
+			c.counters.setSuccess()
 			return nil
 		}
 		if !store.IsBusy(err) {
