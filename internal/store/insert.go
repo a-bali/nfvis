@@ -242,19 +242,62 @@ func (s *Store) InsertBatchIDs(ctx context.Context, flows []model.Flow) ([]int64
 	return res.IDs, nil
 }
 
+// beginImmediate opens the write transaction used by the ingest and DNS write
+// paths.
+//
+// BEGIN IMMEDIATE takes the write lock up front, which is what makes busy_timeout
+// apply to the statements that follow — and, unavoidably, to BEGIN itself. So
+// contention must WAIT rather than fail: with six concurrent writers, capping the
+// wait at 150-400ms made things worse, not better (4 failures in 48 became 19).
+//
+// There is exactly one attempt here, because a retry multiplies an already-elapsed
+// wait: a contended BEGIN costs the full busy_timeout (measured 5.02s at the
+// default 5000ms), so six attempts blocked a flush for 30 seconds and three would
+// block it for 15. The failure is returned as ErrLockWaitExhausted so callers that
+// retry on IsBusy stop instead of paying again — the single attempt is only half
+// the guarantee; the other half is that nobody above it retries.
+//
+// THE CALLER'S CONTEXT DOES NOT BOUND THE WAIT. Only busy_timeout does. ctx is
+// consulted before the call as a pre-flight check, and nothing more: a caller with
+// a 2s deadline still waits the full 5s, because SQLite's wait happens inside the
+// driver where Go cannot interrupt it, and busy_timeout is per-connection so it
+// cannot be lowered for one BEGIN without risking a different pooled connection
+// than the one that starts the transaction. Callers should therefore set their
+// batch deadlines at or above busy_timeout, or expect to overshoot to it.
+//
+// The transaction itself gets context.Background(). database/sql closes a
+// transaction when its context is cancelled, so passing the caller's context here
+// would kill the transaction on the success path as soon as that deadline passed —
+// verified: a transaction opened with a 100ms context returns
+// "sql: transaction has already been committed or rolled back" on both Exec and
+// Commit once it expires. Callers bound the statements they run inside it.
+func (s *Store) beginImmediate(ctx context.Context) (*sql.Tx, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	tx, err := s.db.BeginTx(context.Background(), nil)
+	if err != nil {
+		if IsBusy(err) {
+			return nil, fmt.Errorf("%w: %v", ErrLockWaitExhausted, err)
+		}
+		return nil, err
+	}
+	return tx, nil
+}
+
 // InsertBatchResult atomically inserts a batch and reports per-record row ids.
 //
 // Duplicate handling is delegated to dedupAction, which only collapses records a
-// configured topology authorizes: an identical payload on another interface is
-// not by itself a duplicate. Aggregates are maintained as signed deltas in the
-// same transaction, so a dropped, promoted or replaced row is subtracted from
-// exactly the buckets it was added to.
+// configured topology authorizes: an identical payload on another interface is not
+// by itself a duplicate. Aggregates are maintained as signed deltas in the same
+// transaction, so a dropped, promoted or replaced row is subtracted from exactly
+// the buckets it was added to.
 func (s *Store) InsertBatchResult(ctx context.Context, flows []model.Flow) (InsertResult, error) {
 	res := InsertResult{IDs: make([]int64, len(flows))}
 	if len(flows) == 0 {
 		return res, nil
 	}
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.beginImmediate(ctx)
 	if err != nil {
 		return res, fmt.Errorf("begin insert: %w", err)
 	}

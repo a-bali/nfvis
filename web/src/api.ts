@@ -33,6 +33,7 @@ export type SystemStats = {
     server: string;
     queue_depth: number; queue_capacity: number; dropped: number; completed: number;
     cache_hits: number; cache_misses: number; named: number; unresolved: number; errors: number;
+    written: number; skipped: number;
     avg_lag_ms: number; max_lag_ms: number;
   };
   ingest: Record<string, number | string | boolean>;

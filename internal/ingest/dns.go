@@ -24,11 +24,13 @@ type DNSStats struct {
 	QueueCapacity   int     `json:"queue_capacity"`
 	Dropped         uint64  `json:"dropped"`
 	Completed       uint64  `json:"completed"`
+	Written         uint64  `json:"written"`
+	Skipped         uint64  `json:"skipped"`
 	CacheHits       uint64  `json:"cache_hits"`
 	CacheMisses     uint64  `json:"cache_misses"`
 	Named           uint64  `json:"named"`
 	Unresolved      uint64  `json:"unresolved"`
-	Errors          uint64  `json:"errors"`
+	Errors          uint64  `json:"errors"` // endpoint lookups not annotated
 	AvgLagMS        float64 `json:"avg_lag_ms"`
 	MaxLagMS        int64   `json:"max_lag_ms"`
 	Entries         int     `json:"entries"`
@@ -38,15 +40,15 @@ type DNSStats struct {
 	Server          string  `json:"server"`
 }
 type dnsWorker struct {
-	resolver                                                         *dnsresolver.Resolver
-	jobs                                                             chan dnsJob
-	wg                                                               sync.WaitGroup
-	dropped, completed, hits, misses, named, unresolved, errors, lag atomic.Uint64
-	maxLag                                                           atomic.Int64
-	timeout                                                          int
-	server                                                           string
-	ctx                                                              context.Context
-	cancel                                                           context.CancelFunc
+	resolver                                                                           *dnsresolver.Resolver
+	jobs                                                                               chan dnsJob
+	wg                                                                                 sync.WaitGroup
+	dropped, completed, written, skipped, hits, misses, named, unresolved, errors, lag atomic.Uint64
+	maxLag                                                                             atomic.Int64
+	timeout                                                                            int
+	server                                                                             string
+	ctx                                                                                context.Context
+	cancel                                                                             context.CancelFunc
 }
 
 func (c *Collector) initDNS() {
@@ -72,6 +74,17 @@ func (c *Collector) initDNS() {
 					d.dropped.Add(1)
 					continue
 				}
+				// Collect both endpoints' observations and write them together.
+				// Opening a transaction per endpoint cost two commits per flow;
+				// at ~236 commits/s to annotate ~106 flows/s this path was
+				// essentially the whole CPU cost of the process.
+				obs := make([]store.DNSObservation, 0, 2)
+				resolved := make([]struct {
+					name string
+					hit  bool
+					lag  int64
+				}, 0, 2)
+				skipped := false
 				for _, endpoint := range []struct{ ip, dir string }{{job.flow.SrcAddr, "source"}, {job.flow.DstAddr, "destination"}} {
 					if endpoint.ip == "" {
 						continue
@@ -79,6 +92,7 @@ func (c *Collector) initDNS() {
 					name, hit := d.resolver.LookupWithCache(d.ctx, endpoint.ip)
 					if d.ctx.Err() != nil {
 						d.dropped.Add(1)
+						skipped = true
 						break
 					}
 					completed := time.Now().UnixMilli()
@@ -90,27 +104,46 @@ func (c *Collector) initDNS() {
 					if end <= 0 {
 						end = job.flow.ReceivedAtMS
 					}
-					ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-					err := c.store.SaveDNS(ctx, store.DNSObservation{ID: job.id, IP: endpoint.ip, Direction: endpoint.dir, Name: name, HourMS: (end / 3600000) * 3600000, CompletedMS: completed})
-					cancel()
-					if err != nil {
-						d.errors.Add(1)
-						c.log.Warn("DNS observation write failed", "error", err)
-						continue
-					}
+					obs = append(obs, store.DNSObservation{ID: job.id, IP: endpoint.ip, Direction: endpoint.dir, Name: name, HourMS: (end / 3600000) * 3600000, CompletedMS: completed})
+					resolved = append(resolved, struct {
+						name string
+						hit  bool
+						lag  int64
+					}{name, hit, lag})
+				}
+				if skipped || len(obs) == 0 {
+					continue
+				}
+				ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+				wrote, err := c.store.SaveDNSBatch(ctx, obs)
+				cancel()
+				if err != nil {
+					// Counted per observation, not per batch, so it is on the same scale as
+					// completed/hits/misses/named — those all count endpoint lookups, and
+					// "errors: 1" for a two-endpoint batch reads as half the damage it is.
+					d.errors.Add(uint64(len(obs)))
+					c.log.Warn("DNS observation write failed", "error", err, "observations", len(obs))
+					continue
+				}
+				// Written vs skipped is the number that shows whether annotation is
+				// actually landing. completed only counts lookups that finished, so a
+				// batch that wrote nothing used to look identical to a successful one.
+				d.written.Add(uint64(wrote))
+				d.skipped.Add(uint64(len(obs) - wrote))
+				for _, r := range resolved {
 					d.completed.Add(1)
-					d.lag.Add(uint64(lag))
-					for old := d.maxLag.Load(); lag > old; old = d.maxLag.Load() {
-						if d.maxLag.CompareAndSwap(old, lag) {
+					d.lag.Add(uint64(r.lag))
+					for old := d.maxLag.Load(); r.lag > old; old = d.maxLag.Load() {
+						if d.maxLag.CompareAndSwap(old, r.lag) {
 							break
 						}
 					}
-					if hit {
+					if r.hit {
 						d.hits.Add(1)
 					} else {
 						d.misses.Add(1)
 					}
-					if name == "" {
+					if r.name == "" {
 						d.unresolved.Add(1)
 					} else {
 						d.named.Add(1)
@@ -162,7 +195,7 @@ func (c *Collector) DNSStats() DNSStats {
 	if n > 0 {
 		avg = float64(d.lag.Load()) / float64(n)
 	}
-	return DNSStats{Enabled: true, QueueDepth: len(d.jobs), QueueCapacity: cap(d.jobs), Dropped: d.dropped.Load(), Completed: n, CacheHits: d.hits.Load(), CacheMisses: d.misses.Load(), Named: d.named.Load(), Unresolved: d.unresolved.Load(), Errors: d.errors.Load(), AvgLagMS: avg, MaxLagMS: d.maxLag.Load(), Entries: s.Entries, MaxEntries: s.MaxEntries, TTLSeconds: s.TTLSeconds, LookupTimeoutMS: d.timeout, Server: d.server}
+	return DNSStats{Enabled: true, QueueDepth: len(d.jobs), QueueCapacity: cap(d.jobs), Dropped: d.dropped.Load(), Completed: n, Written: d.written.Load(), Skipped: d.skipped.Load(), CacheHits: d.hits.Load(), CacheMisses: d.misses.Load(), Named: d.named.Load(), Unresolved: d.unresolved.Load(), Errors: d.errors.Load(), AvgLagMS: avg, MaxLagMS: d.maxLag.Load(), Entries: s.Entries, MaxEntries: s.MaxEntries, TTLSeconds: s.TTLSeconds, LookupTimeoutMS: d.timeout, Server: d.server}
 }
 func (c *Collector) FlushDNS() int {
 	if c.dns == nil {

@@ -495,6 +495,13 @@ func (c *Collector) insertWithRetry(ctx context.Context, batch []model.Flow) err
 		if !store.IsBusy(err) {
 			break
 		}
+		// A BEGIN that waited out busy_timeout is not transient contention: the
+		// write lock was held for the entire timeout, so another attempt just pays
+		// that full wait again. Retrying it turned one 5s stall into 15s (three
+		// attempts, measured) with no better chance of success.
+		if errors.Is(err, store.ErrLockWaitExhausted) {
+			break
+		}
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

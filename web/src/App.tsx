@@ -1300,6 +1300,7 @@ export default function App() {
                   <Stat label="Queue drops" value={fmtNumber(system.dns.dropped)} hint="flow jobs not enriched" />
                   <Stat label="Cache hits / misses" value={`${fmtNumber(system.dns.cache_hits)} / ${fmtNumber(system.dns.cache_misses)}`} />
                   <Stat label="Named / unresolved" value={`${fmtNumber(system.dns.named)} / ${fmtNumber(system.dns.unresolved)}`} hint="endpoint lookups" />
+                  <Stat label="Rows annotated / skipped" value={`${fmtNumber(system.dns.written)} / ${fmtNumber(system.dns.skipped)}`} hint="writes that landed vs unchanged repeats" />
                   <Stat label="DNS write errors" value={fmtNumber(system.dns.errors)} />
                   <Stat label="Avg / max lookup lag" value={`${system.dns.avg_lag_ms.toFixed(1)} / ${fmtNumber(system.dns.max_lag_ms)} ms`} hint="from flow receipt to lookup completion" />
                 </div>

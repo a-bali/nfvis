@@ -240,6 +240,15 @@ func IsDiskFull(err error) bool {
 		strings.Contains(msg, "sqlite_full") || strings.Contains(msg, "database or disk is full")
 }
 
+// ErrLockWaitExhausted marks a BEGIN that failed after waiting the full
+// busy_timeout.
+//
+// It is distinguished from generic SQLITE_BUSY because retrying it is not
+// transient recovery — it multiplies an already-elapsed 5s wait. Callers that
+// retry on IsBusy must stop here instead, which is what keeps a stalled flush at
+// one busy_timeout rather than three.
+var ErrLockWaitExhausted = errors.New("write lock not acquired within busy_timeout")
+
 // IsBusy reports transient SQLite lock contention.
 func IsBusy(err error) bool {
 	if err == nil {
