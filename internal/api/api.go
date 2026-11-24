@@ -584,27 +584,32 @@ func (a *Server) top(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.applyLabels(&result, dimension)
+	// names holds every distinct DNS name seen for each address in the range,
+	// newest first. Only the newest is displayed (one host, one name), but all of
+	// them stay searchable: a host that was renamed during the window must still
+	// be found by its old name.
+	var names map[string][]string
 	if dimension == "host" {
 		direction := q.Direction
 		if direction != "destination" {
 			direction = "source"
 		}
-		names, err := a.store.HistoricalNames(r.Context(), tr, direction)
+		found, err := a.store.HistoricalNames(r.Context(), tr, direction)
 		if err != nil {
 			writeError(w, http.StatusInternalServerError, "database", "historical DNS query failed")
 			return
 		}
+		names = found
 		for i := range result.Rows {
-			found := names[result.Rows[i].Key]
-			if len(found) > 0 {
-				result.Rows[i].Label = strings.Join(found, ", ")
+			if name := hostLabel(names, result.Rows[i].Key); name != "" {
+				result.Rows[i].Label = name
 			}
 		}
 	}
 	if search != "" {
 		filtered := result.Rows[:0]
 		for _, row := range result.Rows {
-			if strings.Contains(strings.ToLower(row.Key), search) || strings.Contains(strings.ToLower(row.Label), search) {
+			if strings.Contains(strings.ToLower(row.Key), search) || strings.Contains(strings.ToLower(row.Label), search) || matchesHistoricalName(names[row.Key], search) {
 				filtered = append(filtered, row)
 			}
 		}
@@ -750,16 +755,50 @@ func (a *Server) labelSplitSeries(ctx context.Context, result *store.SplitResult
 		if band.Other {
 			continue
 		}
-		// One name per host: HistoricalNames returns every name observed for the
-		// IP inside the range, most recent first. Joining them all produced
-		// "a.example, b.example" in the legend for a host whose PTR record
-		// changed during the window, which reads as two hosts. The band is one
-		// host, so it takes the most recent name; the address stays available in
-		// the row tooltip.
-		if found := names[band.Key]; len(found) > 0 && found[0] != "" {
-			band.Label = found[0]
+		// One name per host: HistoricalNames returns every hour's name for the
+		// IP, most recent first, so a band takes the newest one. Joining them
+		// made a host whose name never changed read as two hosts in the legend
+		// ("a.example, a.example"). The same rule labels the ranked tables; see
+		// hostLabel.
+		if name := hostLabel(names, band.Key); name != "" {
+			band.Label = name
 		}
 	}
+}
+
+// hostLabel picks the one name a host is shown under: the most recent PTR name
+// observed in the range.
+//
+// HistoricalNames returns one entry per (hour, host, direction, name), so a host
+// whose name never changed still comes back once per hour it was looked up in.
+// Joining those entries turned one host into "talos2.lan, talos2.lan" in both
+// the ranked tables and the chart legend. A row or a band is one host, so it
+// carries the single name at index 0 (the query orders names newest-first).
+// Empty entries are skipped rather than truncating the search, so a name is
+// still found if an earlier entry lost its name to a retention sweep.
+func hostLabel(names map[string][]string, key string) string {
+	for _, name := range names[key] {
+		if name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+// matchesHistoricalName reports whether any name recorded for a host in the
+// range contains search (already lowercased).
+//
+// The Hosts table displays only the newest name, so matching on the displayed
+// label alone would stop finding a host by a name it used earlier in the window
+// — a search regression for anyone looking up an address by its old PTR. The
+// historical list is what makes that work.
+func matchesHistoricalName(names []string, search string) bool {
+	for _, name := range names {
+		if strings.Contains(strings.ToLower(name), search) {
+			return true
+		}
+	}
+	return false
 }
 
 func compareUint(a, b uint64) int {

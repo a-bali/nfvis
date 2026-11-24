@@ -167,9 +167,17 @@ func (s *Store) applyDNSObservation(ctx context.Context, tx *sql.Tx, o DNSObserv
 	return nil
 }
 
-// HistoricalNames returns captured names by IP for a range and direction.
+// HistoricalNames returns captured names by IP for a range and direction, one
+// entry per distinct name, most recently observed first.
+//
+// The table stores one row per hour, so a host whose name never changed would
+// otherwise contribute an entry per hour it was looked up in: a 30-day range
+// returned hundreds of copies of the same name per address, and every consumer
+// that joined the list showed the name repeated ("talos2.lan, talos2.lan"). The
+// repetition carried no information — the same name observed in five hours is
+// one name — so the query collapses it and keeps MAX(last_ms) for ordering.
 func (s *Store) HistoricalNames(ctx context.Context, r Range, direction string) (map[string][]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT host,name FROM dns_host_history WHERE hour_ms >= ? AND hour_ms < ? AND direction=? ORDER BY last_ms DESC`, (r.FromMS/hourMS)*hourMS, r.ToMS, direction)
+	rows, err := s.db.QueryContext(ctx, `SELECT host, name FROM dns_host_history WHERE hour_ms >= ? AND hour_ms < ? AND direction=? GROUP BY host, name ORDER BY MAX(last_ms) DESC`, (r.FromMS/hourMS)*hourMS, r.ToMS, direction)
 	if err != nil {
 		return nil, err
 	}

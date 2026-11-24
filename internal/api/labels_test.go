@@ -168,6 +168,229 @@ func TestHistoricalNamesNewestFirst(t *testing.T) {
 	}
 }
 
+// TestTopHostLabelIsOneName is the regression test for the Hosts view's Label
+// column repeating a name: "talos2.lan, talos2.lan".
+//
+// HistoricalNames returns one row per (hour, host, direction, name), so a
+// hostname that stayed the same across two hours of the requested range comes
+// back twice. The top handler joined every entry with ", ", which turned a
+// single host into a label that reads as two. This drives the handler the
+// browser calls, so it covers the whole path: store query, DNS join, JSON.
+func TestTopHostLabelIsOneName(t *testing.T) {
+	cfg := config.Default()
+	cfg.Database.Path = filepath.Join(t.TempDir(), "top-label.db")
+	cfg.DNS.Enabled = true
+	cfg.Listen.UDP = "127.0.0.1:0"
+	st, err := store.Open(cfg)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+
+	now := time.Now().UTC()
+	hourMS := (now.UnixMilli() / 3600000) * 3600000
+	// The same host sending traffic in two different hours.
+	flows := []model.Flow{
+		{ReceivedAtMS: now.UnixMilli(), StartMS: now.UnixMilli(), EndMS: now.UnixMilli(),
+			TimeSource: "start", Version: 9, Exporter: "192.0.2.1", ExporterIP: "192.0.2.1",
+			SrcAddr: "10.0.0.5", DstAddr: "192.0.2.9", SrcPort: 1024, DstPort: 443,
+			Protocol: 6, Bytes: 100, Packets: 1},
+		{ReceivedAtMS: now.Add(-time.Hour).UnixMilli(), StartMS: now.Add(-time.Hour).UnixMilli(),
+			EndMS: now.Add(-time.Hour).UnixMilli(), TimeSource: "start", Version: 9,
+			Exporter: "192.0.2.1", ExporterIP: "192.0.2.1",
+			SrcAddr: "10.0.0.5", DstAddr: "192.0.2.9", SrcPort: 1025, DstPort: 443,
+			Protocol: 6, Bytes: 200, Packets: 2},
+	}
+	if err := st.InsertBatch(context.Background(), flows); err != nil {
+		t.Fatalf("insert flows: %v", err)
+	}
+	// One lookup per hour, both resolving to the same name — the ordinary case
+	// for a host that keeps talking across an hour boundary.
+	for i, hour := range []int64{hourMS, hourMS - 3600000} {
+		if err := st.SaveDNS(context.Background(), store.DNSObservation{
+			ID: int64(i + 1), IP: "10.0.0.5", Direction: "source", Name: "talos2.lan",
+			HourMS: hour, CompletedMS: now.Add(-time.Duration(i) * time.Hour).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("save dns: %v", err)
+		}
+	}
+
+	s := New(cfg, st, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-version")
+	from := now.Add(-3 * time.Hour).Format(time.RFC3339)
+	to := now.Add(time.Hour).Format(time.RFC3339)
+	rec := httptest.NewRecorder()
+	s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+		"/api/v1/top?dimension=host&direction=source&from="+from+"&to="+to, nil))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status %d: %s", rec.Code, rec.Body.String())
+	}
+	var result store.TopResult
+	if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	if len(result.Rows) != 1 {
+		t.Fatalf("rows = %+v, want the one host", result.Rows)
+	}
+	if got := result.Rows[0].Label; got != "talos2.lan" {
+		t.Errorf("label = %q, want %q; one host must carry one name even when the "+
+			"same name was recorded in several hours", got, "talos2.lan")
+	}
+}
+
+// TestHistoricalNamesCollapsesRepeatedName pins the store-side half of the
+// "talos2.lan, talos2.lan" label bug.
+//
+// dns_host_history keeps one row per hour, so a name that persisted across
+// several hours was returned several times. Consumers that list names (the
+// Hosts table, the chart legend) showed the repeat, and the API payload grew
+// with the range width for no reason: a 30-day window returned hundreds of
+// copies of one name per address. One distinct name per address, however many
+// hours it was observed in.
+func TestHistoricalNamesCollapsesRepeatedName(t *testing.T) {
+	st, _ := newLabelTestStore(t)
+	ctx := context.Background()
+	now := time.Now().UTC()
+	hourMS := (now.UnixMilli() / 3600000) * 3600000
+
+	if err := st.InsertBatch(ctx, []model.Flow{{
+		ReceivedAtMS: now.UnixMilli(), StartMS: now.UnixMilli(), EndMS: now.UnixMilli(),
+		TimeSource: "start", Version: 9,
+		Exporter: "192.0.2.1", ExporterIP: "192.0.2.1",
+		SrcAddr: "10.0.0.8", DstAddr: "192.0.2.9",
+		SrcPort: 1024, DstPort: 443, Protocol: 6,
+		Bytes: 100, Packets: 1,
+	}}); err != nil {
+		t.Fatalf("insert flow: %v", err)
+	}
+
+	// The same name in three different hours, plus one older, different name.
+	names := []struct {
+		name    string
+		hourAgo int64
+	}{
+		{"steady.lan", 0}, {"steady.lan", 1}, {"steady.lan", 2},
+		{"former.lan", 3},
+	}
+	for _, n := range names {
+		if err := st.SaveDNS(ctx, store.DNSObservation{
+			ID: 1, IP: "10.0.0.8", Direction: "source", Name: n.name,
+			HourMS: hourMS - n.hourAgo*3600000, CompletedMS: now.Add(-time.Duration(n.hourAgo) * time.Hour).UnixMilli(),
+		}); err != nil {
+			t.Fatalf("save dns %s: %v", n.name, err)
+		}
+	}
+
+	got, err := st.HistoricalNames(ctx, store.Range{
+		FromMS: now.Add(-6 * time.Hour).UnixMilli(),
+		ToMS:   now.Add(time.Hour).UnixMilli(),
+	}, "source")
+	if err != nil {
+		t.Fatalf("historical names: %v", err)
+	}
+	list := got["10.0.0.8"]
+	if len(list) != 2 {
+		t.Fatalf("names = %v, want two distinct names", list)
+	}
+	if list[0] != "steady.lan" || list[1] != "former.lan" {
+		t.Errorf("names = %v, want [steady.lan former.lan] (newest first)", list)
+	}
+}
+
+// TestHostLabelIgnoresRepeats pins the display half: even if the store hands
+// back the same name more than once, a row or band labels one host with one
+// name. The API must not depend on the store deduplicating for correctness.
+func TestHostLabelIgnoresRepeats(t *testing.T) {
+	names := map[string][]string{
+		"10.0.0.5": {"talos2.lan", "talos2.lan", "talos2.lan"},
+		"10.0.0.6": {"newer.lan", "older.lan"},
+		"10.0.0.7": {"", "named.lan"},
+		"10.0.0.8": {},
+	}
+	cases := map[string]string{
+		"10.0.0.5": "talos2.lan",
+		"10.0.0.6": "newer.lan",
+		"10.0.0.7": "named.lan",
+		"10.0.0.8": "",
+		"10.0.0.9": "",
+	}
+	for key, want := range cases {
+		if got := hostLabel(names, key); got != want {
+			t.Errorf("hostLabel(%s) = %q, want %q", key, got, want)
+		}
+	}
+}
+
+// TestTopHostSearchFindsRenamedHost pins the search path against the display
+// fix. The Hosts table shows one name per host — the newest — so filtering on
+// the displayed label alone would stop finding a host by a name it used earlier
+// in the window. Collapsing the joined label must not cost that searchability.
+func TestTopHostSearchFindsRenamedHost(t *testing.T) {
+	cfg := config.Default()
+	cfg.Database.Path = filepath.Join(t.TempDir(), "search-label.db")
+	cfg.DNS.Enabled = true
+	cfg.Listen.UDP = "127.0.0.1:0"
+	st, err := store.Open(cfg)
+	if err != nil {
+		t.Fatalf("open store: %v", err)
+	}
+	defer st.Close()
+	ctx := context.Background()
+
+	now := time.Now().UTC()
+	hourMS := (now.UnixMilli() / 3600000) * 3600000
+	if err := st.InsertBatch(ctx, []model.Flow{{
+		ReceivedAtMS: now.UnixMilli(), StartMS: now.UnixMilli(), EndMS: now.UnixMilli(),
+		TimeSource: "start", Version: 9, Exporter: "192.0.2.1", ExporterIP: "192.0.2.1",
+		SrcAddr: "10.0.0.60", DstAddr: "192.0.2.9", SrcPort: 1024, DstPort: 443,
+		Protocol: 6, Bytes: 100, Packets: 1,
+	}}); err != nil {
+		t.Fatalf("insert flow: %v", err)
+	}
+	// Renamed during the window: the current name is the newest, the old one is
+	// still in the history.
+	for _, o := range []store.DNSObservation{
+		{ID: 1, IP: "10.0.0.60", Direction: "source", Name: "was-nas.lan",
+			HourMS: hourMS - 3600000, CompletedMS: now.Add(-2 * time.Hour).UnixMilli()},
+		{ID: 1, IP: "10.0.0.60", Direction: "source", Name: "is-storage.lan",
+			HourMS: hourMS, CompletedMS: now.UnixMilli()},
+	} {
+		if err := st.SaveDNS(ctx, o); err != nil {
+			t.Fatalf("save dns: %v", err)
+		}
+	}
+
+	s := New(cfg, st, nil, slog.New(slog.NewTextHandler(io.Discard, nil)), "test-version")
+	from := now.Add(-6 * time.Hour).Format(time.RFC3339)
+	to := now.Add(time.Hour).Format(time.RFC3339)
+	search := func(term string) (int, string) {
+		rec := httptest.NewRecorder()
+		s.Handler().ServeHTTP(rec, httptest.NewRequest(http.MethodGet,
+			"/api/v1/top?dimension=host&direction=source&from="+from+"&to="+to+"&search="+term, nil))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("search %q: status %d: %s", term, rec.Code, rec.Body.String())
+		}
+		var result store.TopResult
+		if err := json.NewDecoder(rec.Body).Decode(&result); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		if len(result.Rows) == 0 {
+			return 0, ""
+		}
+		return result.Total, result.Rows[0].Label
+	}
+
+	for _, term := range []string{"is-storage", "was-nas"} {
+		total, label := search(term)
+		if total != 1 {
+			t.Errorf("search %q found %d rows, want the one host (old names must stay searchable)", term, total)
+			continue
+		}
+		if label != "is-storage.lan" {
+			t.Errorf("search %q returned label %q, want the current name %q", term, label, "is-storage.lan")
+		}
+	}
+}
+
 // TestSplitSeriesLabelIgnoresOtherBand checks the "Other" fold keeps its own
 // label rather than being renamed after whichever IP it absorbed.
 func TestSplitSeriesLabelIgnoresOtherBand(t *testing.T) {
