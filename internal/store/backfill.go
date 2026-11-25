@@ -8,6 +8,36 @@ import (
 	"time"
 )
 
+// backfillFineInterface runs in migration 6's transaction. Hour-aligned
+// chunks bound the GROUP BY scratch space and never split a fine bucket.
+func backfillFineInterface(ctx context.Context, tx *sql.Tx) error {
+	var newest sql.NullInt64
+	if err := tx.QueryRowContext(ctx, `SELECT MAX(end_ms) FROM flows`).Scan(&newest); err != nil || !newest.Valid {
+		return err
+	}
+	for _, tier := range fineInterfaceTiers {
+		var first int64
+		if err := tx.QueryRowContext(ctx, `SELECT from_ms FROM interface_fine_coverage WHERE res_ms=?`, tier.resMS).Scan(&first); err != nil {
+			return err
+		}
+		for from := first; from <= newest.Int64; {
+			to := floorToHour(from) + hourMS
+			_, err := tx.ExecContext(ctx, `INSERT INTO agg_interface_fine
+				SELECT ?, f.end_ms / ? * ?, f.exporter,
+					CASE side.dir WHEN 'ingress' THEN f.input_if ELSE f.output_if END,
+					side.dir, SUM(f.bytes), SUM(f.packets), COUNT(*)
+				FROM flows f CROSS JOIN (SELECT 'ingress' AS dir UNION ALL SELECT 'egress') side
+				WHERE f.end_ms >= ? AND f.end_ms < ?
+				GROUP BY 2,3,4,5`, tier.resMS, tier.resMS, tier.resMS, from, to)
+			if err != nil {
+				return err
+			}
+			from = to
+		}
+	}
+	return nil
+}
+
 // backfillTrafficTiers seeds each missing resolution when a database is opened. Databases created before the tier table only
 // hold raw flows and hourly per-dimension aggregates, so without this one-time
 // pass the charts would show no history until the new tiers accumulate.

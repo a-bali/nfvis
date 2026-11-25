@@ -3,7 +3,10 @@ package store
 import (
 	"context"
 	"fmt"
+	"time"
 )
+
+var fineInterfaceTiers = [...]trafficTier{{minuteMS, 7 * 24 * hourMS}, {5 * minuteMS, 30 * 24 * hourMS}}
 
 // InterfaceSeries keeps each direction's counters unsigned and on the same grid.
 // A flow with the selected interface on both sides contributes to both series.
@@ -14,17 +17,21 @@ type InterfaceSeries struct {
 	Limitations []string `json:"limitations"`
 }
 
-// InterfaceTimeseries uses indexed hourly interface totals for complete older
-// hours. The most recent hour and partial edge hours use minute buckets from
-// stored flows. Only complete buckets are returned; a clipped bucket cannot
-// turn counters for a whole export interval into a reliable rate.
+// InterfaceTimeseries uses one resolution per chart from the available
+// fine or hourly rollups. Incomplete buckets do not contribute to rates.
 func (s *Store) InterfaceTimeseries(ctx context.Context, r Range, exporter string, index uint32) (InterfaceSeries, error) {
 	result := InterfaceSeries{Range: r, Ingress: []Point{}, Egress: []Point{}, Limitations: []string{}}
-	coverage, err := s.Coverage(ctx)
-	if err != nil {
-		return result, err
+	var coverage Coverage
+	// Exporter and interface rollups are written in the same transaction.
+	// The interface chart does not need the collector-wide tier inventory.
+	if err := s.db.QueryRowContext(ctx, `SELECT
+		COALESCE((SELECT MIN(hour_ms) FROM agg_exporter),0),
+		COALESCE((SELECT MAX(hour_ms) FROM agg_exporter),0)`).
+		Scan(&coverage.AggregateOldestMS, &coverage.AggregateNewestMS); err != nil {
+		return result, fmt.Errorf("read interface chart coverage: %w", err)
 	}
-	emit := func(from, to, width int64, hourly bool) error {
+	coverage.AggregateAvailable = coverage.AggregateOldestMS > 0
+	emit := func(from, to, width int64, source string) error {
 		// Counters are attributed to the bucket containing the flow's end
 		// time, not distributed across its lifetime. Don't divide them by
 		// the few seconds of a bucket clipped by the query or retention.
@@ -35,11 +42,16 @@ func (s *Store) InterfaceTimeseries(ctx context.Context, r Range, exporter strin
 		}
 		var args []any
 		var sql string
-		if hourly {
+		switch source {
+		case "hourly":
 			sql = `SELECT hour_ms, direction, bytes, packets, flows FROM agg_interface
            WHERE exporter = ? AND if_index = ? AND hour_ms >= ? AND hour_ms < ?`
 			args = []any{exporter, index, from, to}
-		} else {
+		case "fine":
+			sql = `SELECT bucket_ms, direction, bytes, packets, flows FROM agg_interface_fine
+				WHERE res_ms = ? AND exporter = ? AND if_index = ? AND bucket_ms >= ? AND bucket_ms < ?`
+			args = []any{width, exporter, index, from, to}
+		default:
 			sql = `WITH matching AS (
      SELECT end_ms / ? * ? AS bucket, input_if, output_if, bytes, packets
      FROM flows WHERE end_ms >= ? AND end_ms < ? AND exporter = ? AND (input_if = ? OR output_if = ?)
@@ -75,6 +87,37 @@ func (s *Store) InterfaceTimeseries(ctx context.Context, r Range, exporter strin
 		appendBuckets(&result.Egress, out, from, to, width, maxSeriesPoints, false)
 		return nil
 	}
+	// Compare against the collector's oldest known hour so a bucket clipped
+	// during migration doesn't silently replace existing hourly history.
+	first := r.FromMS
+	if coverage.AggregateAvailable && first < coverage.AggregateOldestMS {
+		first = coverage.AggregateOldestMS
+	}
+	span := r.ToMS - r.FromMS
+	now := time.Now().UnixMilli()
+	for i, tier := range fineInterfaceTiers {
+		if (i == 0 && span > 6*hourMS) || span > tier.retentionMS {
+			continue
+		}
+		aligned := ceilDiv(first, tier.resMS) * tier.resMS
+		cutoff := (now - tier.retentionMS) / tier.resMS * tier.resMS
+		if !coverage.AggregateAvailable || aligned < max64(s.fineInterfaceFrom[i], cutoff) {
+			continue
+		}
+		if first > r.FromMS {
+			result.Limitations = appendChartCoverageLimitation(result.Limitations, first)
+		}
+		if err := emit(first, r.ToMS, tier.resMS, "fine"); err != nil {
+			return result, fmt.Errorf("fine interface chart: %w", err)
+		}
+		return result, nil
+	}
+
+	if err := s.db.QueryRowContext(ctx, `SELECT COALESCE(MIN(end_ms),0) FROM flows`).Scan(&coverage.RawOldestMS); err != nil {
+		return result, fmt.Errorf("read raw interface chart coverage: %w", err)
+	}
+	coverage.RawAvailable = coverage.RawOldestMS > 0
+
 	// Do not show an unavailable partial hour as zero. Clamp raw reads to
 	// retained detail, and account for any missing portion of the window.
 	cursor := r.FromMS
@@ -90,26 +133,16 @@ func (s *Store) InterfaceTimeseries(ctx context.Context, r Range, exporter strin
 		if first > from {
 			result.Limitations = appendChartCoverageLimitation(result.Limitations, first)
 		}
-		// Around a retention seam the only raw segments are partial edge hours;
-		// for wider raw-only windows use an appropriately coarse grid.
-		width := minuteMS
-		if to-first > 3*hourMS {
-			width = hourMS
-		}
-		return emit(first, to, width, false)
+		return emit(first, to, hourMS, "raw")
 	}
 	if coverage.AggregateAvailable {
 		from := max64(ceilToHour(r.FromMS), coverage.AggregateOldestMS)
-		until := floorToHour(r.ToMS)
-		if coverage.RawAvailable {
-			until = min64(until, floorToHour(max64(r.ToMS-hourMS, ceilToHour(coverage.RawOldestMS))))
-		}
-		to := min64(until, coverage.AggregateNewestMS+hourMS)
+		to := min64(floorToHour(r.ToMS), coverage.AggregateNewestMS+hourMS)
 		if from < to {
 			if err := raw(cursor, from); err != nil {
 				return result, fmt.Errorf("interface chart start: %w", err)
 			}
-			if err := emit(from, to, hourMS, true); err != nil {
+			if err := emit(from, to, hourMS, "hourly"); err != nil {
 				return result, fmt.Errorf("hourly interface chart: %w", err)
 			}
 			cursor = to

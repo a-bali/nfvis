@@ -9,7 +9,7 @@ import (
 )
 
 // schemaVersion is incremented for every compatibility-breaking schema change.
-const schemaVersion = 5
+const schemaVersion = 6
 
 var migrations = []string{
 	`CREATE TABLE IF NOT EXISTS flows (
@@ -168,6 +168,20 @@ var migrations = []string{
 	// rows already collapsed by the old constraint cannot be recovered.
 	`DROP INDEX IF EXISTS idx_flows_dedup_key;
 	CREATE INDEX idx_flows_dedup_key_lookup ON flows(dedup_key) WHERE dedup_key IS NOT NULL;`,
+	// Seed both fine interface tiers atomically before the collector starts.
+	`CREATE TABLE agg_interface_fine (
+		res_ms INTEGER NOT NULL, bucket_ms INTEGER NOT NULL, exporter TEXT NOT NULL,
+		if_index INTEGER NOT NULL, direction TEXT NOT NULL,
+		bytes INTEGER NOT NULL, packets INTEGER NOT NULL, flows INTEGER NOT NULL,
+		PRIMARY KEY (res_ms, bucket_ms, exporter, if_index, direction)
+	) WITHOUT ROWID;
+	CREATE INDEX idx_interface_fine_series ON agg_interface_fine(res_ms, exporter, if_index, bucket_ms);
+	CREATE TABLE interface_fine_coverage (res_ms INTEGER PRIMARY KEY, from_ms INTEGER NOT NULL);
+	INSERT INTO interface_fine_coverage
+	SELECT res, CASE WHEN oldest IS NULL THEN 0 ELSE
+		(max(oldest, unixepoch('now') * 1000 - keep_ms) + res - 1) / res * res END
+	FROM (SELECT 60000 AS res, 604800000 AS keep_ms UNION ALL SELECT 300000, 2592000000)
+	CROSS JOIN (SELECT MIN(end_ms) AS oldest FROM flows);`,
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {
@@ -205,6 +219,12 @@ func migrate(ctx context.Context, db *sql.DB) error {
 		if _, err := tx.ExecContext(ctx, migrations[version-1]); err != nil {
 			_ = tx.Rollback()
 			return fmt.Errorf("apply migration %d: %w", version, err)
+		}
+		if version == 6 {
+			if err := backfillFineInterface(ctx, tx); err != nil {
+				_ = tx.Rollback()
+				return fmt.Errorf("backfill migration %d: %w", version, err)
+			}
 		}
 		if _, err := tx.ExecContext(ctx, `INSERT INTO schema_migrations(version, applied_at) VALUES(?, ?)`,
 			version, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {

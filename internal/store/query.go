@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
-	"net"
 	"sort"
 	"strconv"
 	"strings"
@@ -434,6 +433,9 @@ func (s *Store) Timeseries(ctx context.Context, q Query) (TimeseriesResult, erro
 	result.AggregateAvailableTo = coverage.AggregateNewestMS + hourMS
 	filtered := hasNonAggregateFilter(q.Filters) || len(q.SrcHostIPs) > 0 || len(q.DstHostIPs) > 0 || q.SrcHostNoMatch || q.DstHostNoMatch
 	if filtered {
+		if history, used, err := s.hostHistory(ctx, q, coverage, result); used || err != nil {
+			return history, err
+		}
 		return s.timeseriesRaw(ctx, q, coverage, result)
 	}
 
@@ -889,15 +891,23 @@ func flowFilterSQL(filters map[string]string, srcIPs, dstIPs []string, srcNoMatc
 		}
 	}
 	if v := filters["src_host"]; v != "" {
-		if net.ParseIP(v) != nil {
-			add("src_addr = ?", v)
+		if address, exact, ok := ipHostTerm(v); ok {
+			if exact {
+				add("src_addr = ?", address)
+			} else {
+				add("instr(lower(src_addr), lower(?)) > 0", address)
+			}
 		} else {
 			add("(instr(lower(src_addr), lower(?)) > 0 OR instr(lower(src_name), lower(?)) > 0)", v, v)
 		}
 	}
 	if v := filters["dst_host"]; v != "" {
-		if net.ParseIP(v) != nil {
-			add("dst_addr = ?", v)
+		if address, exact, ok := ipHostTerm(v); ok {
+			if exact {
+				add("dst_addr = ?", address)
+			} else {
+				add("instr(lower(dst_addr), lower(?)) > 0", address)
+			}
 		} else {
 			add("(instr(lower(dst_addr), lower(?)) > 0 OR instr(lower(dst_name), lower(?)) > 0)", v, v)
 		}

@@ -57,6 +57,13 @@ type ifaceKey struct {
 	ifIndex   uint32
 	direction string
 }
+type fineIfaceKey struct {
+	res, bucket int64
+	exporter    string
+	ifIndex     uint32
+	direction   string
+}
+
 type hostKey struct {
 	hour      int64
 	host      string
@@ -77,13 +84,15 @@ type trafficKey struct {
 }
 
 type batchAggregates struct {
-	exporter map[exporterKey]*counters
-	iface    map[ifaceKey]*counters
-	host     map[hostKey]*counters
-	vlan     map[vlanKey]*counters
-	protocol map[protocolKey]*counters
-	traffic  map[trafficKey]*counters
-	tiers    []trafficTier
+	exporter  map[exporterKey]*counters
+	iface     map[ifaceKey]*counters
+	fineIface map[fineIfaceKey]*counters
+	fineFrom  [2]int64
+	host      map[hostKey]*counters
+	vlan      map[vlanKey]*counters
+	protocol  map[protocolKey]*counters
+	traffic   map[trafficKey]*counters
+	tiers     []trafficTier
 }
 
 func newBatchAggregates(n int, tiers []trafficTier) *batchAggregates {
@@ -113,7 +122,26 @@ func (a *batchAggregates) sub(f model.Flow) { a.apply(f, -1) }
 // contribution the stored row does not have: a promotion once subtracted the
 // child's VLAN and sampling contribution and added the parent's while the row
 // itself kept the child's values.
+func (a *batchAggregates) fineInterface(f model.Flow, index uint32, direction string, sign int64) {
+	if a.fineIface == nil {
+		return
+	}
+	for i, tier := range fineInterfaceTiers {
+		b := f.EndMS / tier.resMS * tier.resMS
+		if b < a.fineFrom[i] {
+			continue
+		}
+		key := fineIfaceKey{tier.resMS, b, f.Exporter, index, direction}
+		bucket(a.fineIface, key).accumulate(f, false, sign)
+	}
+}
+
 func (a *batchAggregates) moveInterfaces(old, current model.Flow) {
+	a.fineInterface(old, old.InputIf, model.DirectionIngress, -1)
+	a.fineInterface(old, old.OutputIf, model.DirectionEgress, -1)
+	// The rewritten row keeps the old end timestamp and counters.
+	a.fineInterface(old, current.InputIf, model.DirectionIngress, 1)
+	a.fineInterface(old, current.OutputIf, model.DirectionEgress, 1)
 	adjust := func(index uint32, label, direction string, sign int64, hour int64) {
 		key := ifaceKey{hour: hour, exporter: current.Exporter, ifIndex: index, direction: direction}
 		cc := bucket(a.iface, key)
@@ -158,6 +186,8 @@ func (a *batchAggregates) apply(f model.Flow, sign int64) {
 	}
 	addInterface(f.InputIf, f.InputLabel, model.DirectionIngress)
 	addInterface(f.OutputIf, f.OutputLabel, model.DirectionEgress)
+	a.fineInterface(f, f.InputIf, model.DirectionIngress, sign)
+	a.fineInterface(f, f.OutputIf, model.DirectionEgress, sign)
 
 	addHost := func(host, direction string) {
 		bucket(a.host, hostKey{hour: hour, host: host, direction: direction}).accumulate(f, host == "", sign)
@@ -320,6 +350,11 @@ func (s *Store) InsertBatchResult(ctx context.Context, flows []model.Flow) (Inse
 	defer deleteStmt.Close()
 
 	aggs := newBatchAggregates(len(flows), s.tiers)
+	aggs.fineIface = make(map[fineIfaceKey]*counters)
+	now := time.Now().UnixMilli()
+	for i, tier := range fineInterfaceTiers {
+		aggs.fineFrom[i] = max64(s.fineInterfaceFrom[i], (now-tier.retentionMS)/tier.resMS*tier.resMS)
+	}
 	// created holds the rows this batch inserted, so a later record in the same
 	// batch that supersedes one of them is accounted for correctly: the row is
 	// deleted and no longer counts as a new row, and its id is withdrawn from the
@@ -412,6 +447,24 @@ func boolToInt(v bool) int {
 }
 
 func upsertAggregates(ctx context.Context, tx *sql.Tx, a *batchAggregates) error {
+	if len(a.fineIface) > 0 {
+		stmt, err := tx.PrepareContext(ctx, `INSERT INTO agg_interface_fine
+			(res_ms,bucket_ms,exporter,if_index,direction,bytes,packets,flows) VALUES(?,?,?,?,?,?,?,?)
+			ON CONFLICT(res_ms,bucket_ms,exporter,if_index,direction) DO UPDATE SET
+			bytes=bytes+excluded.bytes,packets=packets+excluded.packets,flows=flows+excluded.flows`)
+		if err != nil {
+			return fmt.Errorf("prepare fine interface rollups: %w", err)
+		}
+		defer stmt.Close()
+		for k, c := range a.fineIface {
+			if c.bytes == 0 && c.packets == 0 && c.flows == 0 {
+				continue
+			}
+			if _, err := stmt.ExecContext(ctx, k.res, k.bucket, k.exporter, k.ifIndex, k.direction, c.bytes, c.packets, c.flows); err != nil {
+				return fmt.Errorf("write fine interface rollups: %w", err)
+			}
+		}
+	}
 	statements := []struct {
 		query string
 		exec  func(*sql.Stmt) error

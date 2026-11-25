@@ -60,9 +60,11 @@ The generated `config-seed.yaml` listens on `127.0.0.1:2056` / `127.0.0.1:8081` 
 
 The screenshots below use synthetic traffic generated with the seeder's built-in pattern; they do not contain production data.
 
+On the Flows page, an unstacked chart with only one Source host or Destination host filter can use hourly totals for history that predates raw flow retention. Enter an exact IP, or use `ip:192.168.1.` for an address-only substring. Bare substring searches also match stored hostnames and still use raw flows. The individual flow table, stacked charts with filters, and compound filters still require raw flows.
+
 ### Overview and time navigation
 
-The Overview chart defaults to a configured interface labeled `wan` (or a numbered WAN label), if available. Choose a configured interface to plot ingress above zero and egress below zero. The same interface is matched against input for ingress and output for egress; the legend calls these Download and Upload for WAN. These are rates from stored flow records, not interface hardware counters. The interface chart shows only complete time buckets, so the newest minute appears after it closes and partial buckets at the edges of a custom range are omitted. Choose **All reported traffic** for the original collector-wide chart.
+The Overview chart defaults to a configured interface labeled `wan` (or a numbered WAN label), if available. Choose a configured interface to plot ingress above zero and egress below zero. The same interface is matched against input for ingress and output for egress; the legend calls these Download and Upload for WAN. These are rates from stored flow records, not interface hardware counters. The interface chart uses one resolution across the selected window: 1-minute rollups for up to six hours, 5-minute rollups for longer ranges, or hourly totals if finer history does not cover the window. Interface rollups are retained for 7 days at 1 minute and 30 days at 5 minutes. The upgrade backfills only retained flows; older hourly totals are not expanded into finer points. It shows only complete buckets, so partial buckets at the edges of a range are omitted. Choose **All reported traffic** for the original collector-wide chart.
 
 ![Overview with traffic chart and collector statistics](docs/screenshots/overview.png)
 
