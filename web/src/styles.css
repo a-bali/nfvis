@@ -187,6 +187,7 @@ h1 { margin: 0; font-size: 26px; letter-spacing: -.02em; }
 }
 .chart-split:hover { border-color: #38bdf8; }
 
+.overview-chart-controls { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; }
 .chart-stack { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #64748b; }
 
 .chart-legend {

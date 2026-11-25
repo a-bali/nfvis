@@ -95,6 +95,12 @@ export type Point = {
   unknown_flows: number;
 };
 
+export type InterfaceSeries = Range & {
+  ingress: Point[];
+  egress: Point[];
+  limitations: string[];
+};
+
 export type Timeseries = Range & {
   resolution: string;
   raw_available_from_ms: number;
@@ -253,6 +259,11 @@ export const api = {
   exporters: (signal?: AbortSignal) =>
     get<{ exporters: Exporter[] }>('/api/v1/exporters', signal),
   coverage: (signal?: AbortSignal) => get<Coverage>('/api/v1/coverage', signal),
+  interfaceTimeseries: (range: Range, exporter: string, ifIndex: string, signal?: AbortSignal) =>
+    get<InterfaceSeries>(`/api/v1/interface-timeseries${params({
+      from: new Date(range.from_ms).toISOString(), to: new Date(range.to_ms).toISOString(),
+      exporter, if_index: ifIndex,
+    })}`, signal),
   timeseries: (
     range: Range,
     filters: Record<string, string>,
