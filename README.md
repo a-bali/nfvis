@@ -62,7 +62,7 @@ The screenshots below use synthetic traffic generated with the seeder's built-in
 
 ### Overview and time navigation
 
-The Overview chart defaults to a configured interface labeled `wan` (or a numbered WAN label), if available. Choose a configured interface to plot ingress above zero and egress below zero. The same interface is matched against input for ingress and output for egress; the legend calls these Download and Upload for WAN. These are rates from stored flow records, not interface hardware counters. Choose **All reported traffic** for the original collector-wide chart.
+The Overview chart defaults to a configured interface labeled `wan` (or a numbered WAN label), if available. Choose a configured interface to plot ingress above zero and egress below zero. The same interface is matched against input for ingress and output for egress; the legend calls these Download and Upload for WAN. These are rates from stored flow records, not interface hardware counters. The interface chart shows only complete time buckets, so the newest minute appears after it closes and partial buckets at the edges of a custom range are omitted. Choose **All reported traffic** for the original collector-wide chart.
 
 ![Overview with traffic chart and collector statistics](docs/screenshots/overview.png)
 

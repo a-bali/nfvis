@@ -16,7 +16,8 @@ type InterfaceSeries struct {
 
 // InterfaceTimeseries uses indexed hourly interface totals for complete older
 // hours. The most recent hour and partial edge hours use minute buckets from
-// stored flows. No new rollups or history backfill are needed.
+// stored flows. Only complete buckets are returned; a clipped bucket cannot
+// turn counters for a whole export interval into a reliable rate.
 func (s *Store) InterfaceTimeseries(ctx context.Context, r Range, exporter string, index uint32) (InterfaceSeries, error) {
 	result := InterfaceSeries{Range: r, Ingress: []Point{}, Egress: []Point{}, Limitations: []string{}}
 	coverage, err := s.Coverage(ctx)
@@ -24,6 +25,11 @@ func (s *Store) InterfaceTimeseries(ctx context.Context, r Range, exporter strin
 		return result, err
 	}
 	emit := func(from, to, width int64, hourly bool) error {
+		// Counters are attributed to the bucket containing the flow's end
+		// time, not distributed across its lifetime. Don't divide them by
+		// the few seconds of a bucket clipped by the query or retention.
+		from = ceilDiv(from, width) * width
+		to = (to / width) * width
 		if from >= to {
 			return nil
 		}
@@ -65,8 +71,8 @@ func (s *Store) InterfaceTimeseries(ctx context.Context, r Range, exporter strin
 		if err := rows.Err(); err != nil {
 			return err
 		}
-		appendBuckets(&result.Ingress, in, from, to, width, maxSeriesPoints, true)
-		appendBuckets(&result.Egress, out, from, to, width, maxSeriesPoints, true)
+		appendBuckets(&result.Ingress, in, from, to, width, maxSeriesPoints, false)
+		appendBuckets(&result.Egress, out, from, to, width, maxSeriesPoints, false)
 		return nil
 	}
 	// Do not show an unavailable partial hour as zero. Clamp raw reads to
