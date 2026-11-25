@@ -8,6 +8,7 @@ import {
   type Flow,
   type FlowPage,
   type Health,
+  type InterfaceSeries,
   type Range,
   type SplitSeries,
   type SystemStats,
@@ -100,6 +101,7 @@ type NavState = {
   flowFilters: Record<string, string>;
   metric: ChartMetric;
   splitBy: string;
+  overviewInterface: string;
 };
 
 const FILTER_KEYS = [
@@ -158,6 +160,7 @@ function readNav(): NavState {
     flowFilters,
     metric,
     splitBy,
+    overviewInterface: p.get('interface') ?? '',
   };
 }
 
@@ -179,8 +182,29 @@ function navSearch(s: NavState): string {
   }
   if (s.metric !== 'bytes') p.set('metric', s.metric);
   if (s.view === 'flows' && s.splitBy) p.set('split', s.splitBy);
+  if (s.overviewInterface) p.set('interface', s.overviewInterface);
   const query = p.toString();
   return query ? `?${query}` : '';
+}
+
+function overviewInterfaces(exporters: Exporter[]) {
+  return exporters.flatMap((exporter) => Object.entries(exporter.interfaces ?? {})
+    .filter(([index]) => Number(index) > 0)
+    .map(([index, label]) => ({
+      key: `${exporter.address}@${index}`,
+      address: exporter.address,
+      index,
+      name: label || `Interface ${index}`,
+      exporter: exporter.label || exporter.address,
+      wan: /^wan(?:[ _-]?\d+)?$/i.test(label.trim()),
+      observed: exporter.observed,
+    })))
+    .sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }) || a.key.localeCompare(b.key));
+}
+
+function selectedOverviewInterface(options: ReturnType<typeof overviewInterfaces>, key: string) {
+  if (key === 'all') return undefined;
+  return options.find((option) => option.key === key) ?? options.find((option) => option.wan && option.observed) ?? options.find((option) => option.wan);
 }
 
 const METRIC_LABELS: Record<ChartMetric, string> = { bytes: 'Bytes', packets: 'Packets', flows: 'Flows' };
@@ -417,6 +441,10 @@ export default function App() {
   const [runningRetention, setRunningRetention] = useState(false);
   const [exporters, setExporters] = useState<Exporter[]>([]);
   const [timeseries, setTimeseries] = useState<Timeseries | null>(null);
+  const [directional, setDirectional] = useState<{ key: string; series: InterfaceSeries } | null>(null);
+  const overviewOptions = useMemo(() => overviewInterfaces(exporters), [exporters]);
+  const overviewSelection = selectedOverviewInterface(overviewOptions, nav.overviewInterface);
+  const visibleDirectional = directional?.key === overviewSelection?.key ? directional?.series : undefined;
   const [recentTraffic, setRecentTraffic] = useState<Timeseries[]>([]);
   const [flowSeries, setFlowSeries] = useState<Timeseries | null>(null);
   const [chartLoading, setChartLoading] = useState(false);
@@ -558,6 +586,7 @@ export default function App() {
     nav.flowFilters,
     nav.metric,
     nav.splitBy,
+    nav.overviewInterface,
   ]);
   const loadedQueryKey = useRef(chartQueryKey);
   const loadedFlowQueryKey = useRef<string | null>(null);
@@ -602,11 +631,14 @@ export default function App() {
           setFlows(null);
         } else if (nav.view === 'overview') {
           const end = Date.now();
-          const [ts, ...recent] = await Promise.all([
+          const selection = selectedOverviewInterface(overviewInterfaces(e.exporters), nav.overviewInterface);
+          const [interfaceSeries, ts, ...recent] = await Promise.all([
+            selection ? track(api.interfaceTimeseries(range, selection.address, selection.index, signal)) : Promise.resolve(null),
             track(api.timeseries(range, {}, { metric: nav.metric }, signal)),
             ...[5 * 60_000, 60 * 60_000, 24 * 60 * 60_000].map((duration) => track(api.timeseries({ from_ms: end - duration, to_ms: end }, {}, { metric: 'bytes' }, signal))),
           ]);
           if (cancelled) return;
+          setDirectional(selection && interfaceSeries ? { key: selection.key, series: interfaceSeries } : null);
           setRecentTraffic(recent);
           setTimeseries(ts);
           setFlowSeries(null);
@@ -783,7 +815,9 @@ export default function App() {
     });
   };
 
-  const seriesOption = (series: Timeseries | null, hidden: string[] = []): EChartsOption => {
+  const seriesOption = (series: Timeseries | null, hidden: string[] = [], directions?: {
+    result?: InterfaceSeries; wan: boolean;
+  }): EChartsOption => {
     const points = series?.points ?? [];
     const bands = series?.series ?? [];
     const metric = nav.metric;
@@ -798,7 +832,20 @@ export default function App() {
     const rate = (value: number, bucket: number) => value * 1000 / (durationByBucket.get(bucket) || series?.bucket_ms || 60000);
     // Every band keeps its series (with empty data when hidden) so ECharts never
     // merges a stale series back in and colors stay attached to their band.
-    const chartSeries = stacked
+    const chartSeries = directions
+      ? [
+          { name: directions.wan ? 'Download' : 'Ingress', points: directions.result?.ingress, sign: 1, color: '#5eead4' },
+          { name: directions.wan ? 'Upload' : 'Egress', points: directions.result?.egress, sign: -1, color: '#a78bfa' },
+        ].map(({ name, points, sign, color }) => ({
+          name,
+          type: 'line' as const,
+          showSymbol: false,
+          lineStyle: { width: 2, color },
+          areaStyle: { opacity: 0.22, color, origin: 0 },
+          itemStyle: { color },
+          data: points?.map((point) => [point.bucket_ms, sign * metricValue(point, metric) * 1000 / point.duration_ms]) ?? [],
+        }))
+      : stacked
       ? bands.map((band, index) => {
           const color = bandColor(band, index);
           const visible = !hidden.includes(bandKey(band));
@@ -845,8 +892,8 @@ export default function App() {
             value: [number, number] | number;
           }[];
           const valueOf = (p: { value: [number, number] | number }) => (Array.isArray(p.value) ? p.value[1] : p.value);
-          const lines = items.map((p) => `${p.seriesName}: ${fmtRate(valueOf(p))}`);
-          if (items.length > 1) {
+          const lines = items.map((p) => `${p.seriesName}: ${fmtRate(Math.abs(valueOf(p)))}`);
+          if (!directions && items.length > 1) {
             const total = items.reduce((sum, p) => sum + valueOf(p), 0);
             lines.push(`Total: ${fmtRate(total)}`);
           }
@@ -855,7 +902,7 @@ export default function App() {
       },
       // A stacked chart has too many bands for an inline legend; the table under
       // the chart names them instead.
-      legend: { show: false },
+      legend: { show: !!directions, textStyle: { color: axisColor } },
       xAxis: {
         type: 'time' as const,
         axisLabel: {
@@ -872,7 +919,7 @@ export default function App() {
             return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
           },
         },
-        axisLine: { lineStyle: { color: gridColor } },
+        axisLine: { onZero: false, lineStyle: { color: gridColor } },
         splitLine: { show: false },
       },
       yAxis: [
@@ -880,7 +927,7 @@ export default function App() {
           type: 'value' as const,
           axisLabel: {
             color: axisColor,
-            formatter: (v: number) => fmtRate(v),
+            formatter: (v: number) => `${v < 0 ? '−' : ''}${fmtRate(Math.abs(v))}`,
           },
           splitLine: { lineStyle: { color: gridColor } },
         },
@@ -889,7 +936,12 @@ export default function App() {
     };
   };
 
-  const tsOption = useMemo(() => seriesOption(timeseries), [timeseries, nav.metric]);
+  const tsOption = useMemo(() => overviewSelection
+    ? seriesOption(null, [], { result: visibleDirectional, wan: overviewSelection.wan })
+    : seriesOption(timeseries), [timeseries, nav.metric, overviewSelection, visibleDirectional]);
+  const overviewHasData = overviewSelection
+    ? !!visibleDirectional?.ingress.some((point, i) => point.flows || visibleDirectional.egress[i]?.flows)
+    : !!timeseries?.points.length;
   const flowChartOption = useMemo(
     () => seriesOption(flowSeries, hiddenBands),
     [flowSeries, nav.metric, hiddenBands],
@@ -899,7 +951,7 @@ export default function App() {
     [timeseries, flowSeries],
   );
   const seriesIdentity = `${range.from_ms}|${range.to_ms}`;
-  const overviewResetKey = seriesIdentity;
+  const overviewResetKey = `${seriesIdentity}|${overviewSelection?.key ?? 'all'}`;
   const flowResetKey = `${seriesIdentity}|${nav.splitBy}|${FILTER_KEYS.map((key) => `${key}=${nav.flowFilters[key] ?? ''}`).join('&')}`;
   // Reset hidden bands only when the chart's shape changes, not on every 5 s
   // polling tick (which shifts the window bounds).
@@ -934,7 +986,8 @@ export default function App() {
 
   const counters = health?.counters ?? {};
   const coverage: Coverage | undefined = health?.coverage;
-  const limitations = [...(timeseries?.limitations ?? []), ...(flowSeries?.limitations ?? []), ...(top?.limitations ?? [])]
+  const overviewLimitations = overviewSelection ? visibleDirectional?.limitations : timeseries?.limitations;
+  const limitations = [...(nav.view === 'overview' ? overviewLimitations ?? [] : []), ...(flowSeries?.limitations ?? []), ...(top?.limitations ?? [])]
     .filter((v, i, a) => a.indexOf(v) === i);
   const visibleTop = topResultKey === topQueryKey ? top : null;
   const connected = !!health && health.status === 'ok' && !error;
@@ -1037,10 +1090,22 @@ export default function App() {
               <div className="card"><span className="card-label">Flows received</span>{[['Last 5 minutes', 'flows_5min'], ['Last hour', 'flows_1hour'], ['Last 24 hours', 'flows_24hour']].map(([label, key]) => <Stat key={key} label={label} value={fmtNumber(Number(counters[key] ?? 0))} />)}<span className="card-hint">Since collector start</span></div>
               <div className="card"><span className="card-label">Collector</span><Stat label="Uptime" value={health ? fmtUptime(health.uptime_seconds) : '—'} /><Stat label="Dropped flows" value={fmtNumber(Number(counters.flows_dropped ?? 0))} /><Stat label="Avg/Med/P90 processing time" value={['processing_avg_ms', 'processing_median_ms', 'processing_p90_ms'].map((key) => typeof counters[key] === 'number' ? `${Number(counters[key]).toFixed(3)} ms` : '—').join(' / ')} /><span className="card-hint">Since collector start</span></div>
               <div className="card"><span className="card-label">Reported traffic</span>{['Last 5 minutes', 'Last hour', 'Last 24 hours'].map((label, i) => <Stat key={label} label={label} value={recentTraffic[i] ? fmtBytes(recentTraffic[i].points.reduce((sum, p) => sum + p.bytes, 0)) : '—'} />)}</div>
-              <div className="card"><span className="card-label">Selected window</span><Stat label="Bytes" value={fmtBytes(selectedTotals.bytes)} /><Stat label="Packets" value={fmtNumber(selectedTotals.packets)} /><Stat label="Flows" value={fmtNumber(selectedTotals.flows)} /></div>
+              <div className="card"><span className="card-label">All reported traffic · Selected window</span><Stat label="Bytes" value={fmtBytes(selectedTotals.bytes)} /><Stat label="Packets" value={fmtNumber(selectedTotals.packets)} /><Stat label="Flows" value={fmtNumber(selectedTotals.flows)} /></div>
             </section>
-            <Panel title="Traffic over time" action={metricToggle}>
-              {timeseries && timeseries.points.length ? (
+            <Panel title={overviewSelection ? 'Interface traffic' : 'All reported traffic'} action={<div className="overview-chart-controls">
+              <label className="chart-stack">
+                <span>Interface</span>
+                <select className="chart-split" aria-label="Interface" value={overviewSelection?.key ?? 'all'}
+                  onChange={(e) => updateNav({ overviewInterface: e.target.value }, 'push')}>
+                  <option value="all">All reported traffic</option>
+                  {overviewOptions.map((option) => <option key={option.key} value={option.key}>
+                    {option.name}{exporters.length > 1 ? ` · ${option.exporter} (${option.address})` : ''}
+                  </option>)}
+                </select>
+              </label>
+              {metricToggle}
+            </div>}>
+              {overviewHasData ? (
                 <Chart
                   option={tsOption}
                   height={400}

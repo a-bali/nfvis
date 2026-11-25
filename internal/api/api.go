@@ -58,6 +58,7 @@ func (a *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/config", a.config)
 	mux.HandleFunc("GET /api/v1/exporters", a.exporters)
 	mux.HandleFunc("GET /api/v1/timeseries", a.timeseries)
+	mux.HandleFunc("GET /api/v1/interface-timeseries", a.interfaceTimeseries)
 	mux.HandleFunc("GET /api/v1/top", a.top)
 	mux.HandleFunc("GET /api/v1/flows", a.flows)
 	mux.Handle("/", a.static())
@@ -470,6 +471,29 @@ func (a *Server) observedExporters(ctx context.Context, aggregateQuery string) (
 		_ = rows.Close()
 	}
 	return observed, nil
+}
+
+func (a *Server) interfaceTimeseries(w http.ResponseWriter, r *http.Request) {
+	tr, err := a.parseRange(r)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "bad_request", err.Error())
+		return
+	}
+	exporter := strings.TrimSpace(r.URL.Query().Get("exporter"))
+	index, err := strconv.ParseUint(r.URL.Query().Get("if_index"), 10, 32)
+	if exporter == "" || err != nil || index == 0 {
+		writeError(w, http.StatusBadRequest, "bad_request", "exporter and a positive if_index are required")
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), timeseriesTimeout)
+	defer cancel()
+	result, err := a.store.InterfaceTimeseries(ctx, tr, exporter, uint32(index))
+	if err != nil {
+		a.log.Error("interface timeseries query failed", "error", err)
+		writeError(w, http.StatusInternalServerError, "database", "interface timeseries query failed")
+		return
+	}
+	writeJSON(w, http.StatusOK, result)
 }
 
 func (a *Server) timeseries(w http.ResponseWriter, r *http.Request) {

@@ -62,6 +62,8 @@ The screenshots below use synthetic traffic generated with the seeder's built-in
 
 ### Overview and time navigation
 
+The Overview chart defaults to a configured interface labeled `wan` (or a numbered WAN label), if available. Choose a configured interface to plot ingress above zero and egress below zero. The same interface is matched against input for ingress and output for egress; the legend calls these Download and Upload for WAN. These are rates from stored flow records, not interface hardware counters. Choose **All reported traffic** for the original collector-wide chart.
+
 ![Overview with traffic chart and collector statistics](docs/screenshots/overview.png)
 
 The Overview combines collector receipt and processing statistics, recent reported traffic, and totals for the selected window. Receipt and processing counters are **since this collector started**, so a seeded database can show historical traffic even when those counters are zero. Select a rolling preset or enter custom From/To bounds in the global time picker. Drag horizontally over a chart to select a custom window. Pause the automatic refresh when inspecting a snapshot; URL-encoded view, range and filter state can be shared or revisited with browser navigation.
