@@ -764,7 +764,7 @@ func TestMigrationAddsTrafficTable(t *testing.T) {
 	if _, err := st.DB().Exec(`DROP TABLE dns_host_history; ALTER TABLE flows DROP COLUMN src_name; ALTER TABLE flows DROP COLUMN dst_name; ALTER TABLE flows DROP COLUMN src_dns_ms; ALTER TABLE flows DROP COLUMN dst_dns_ms; DROP INDEX IF EXISTS idx_flows_dedup_key_lookup; DROP INDEX IF EXISTS idx_flows_dedup_key; ALTER TABLE flows DROP COLUMN dedup_key`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`DELETE FROM schema_migrations WHERE version >= 2`); err != nil {
+	if _, err := st.DB().Exec(`DROP TABLE agg_interface_fine; DROP TABLE interface_fine_coverage; DELETE FROM schema_migrations WHERE version >= 2`); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := st.DB().Exec(`DROP TABLE IF EXISTS agg_traffic`); err != nil {
@@ -807,7 +807,7 @@ func TestBackfillSeedsTiersOnUpgrade(t *testing.T) {
 	if _, err := st.DB().Exec(`DROP TABLE dns_host_history; ALTER TABLE flows DROP COLUMN src_name; ALTER TABLE flows DROP COLUMN dst_name; ALTER TABLE flows DROP COLUMN src_dns_ms; ALTER TABLE flows DROP COLUMN dst_dns_ms; DROP INDEX IF EXISTS idx_flows_dedup_key_lookup; DROP INDEX IF EXISTS idx_flows_dedup_key; ALTER TABLE flows DROP COLUMN dedup_key`); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`DELETE FROM schema_migrations WHERE version >= 2`); err != nil {
+	if _, err := st.DB().Exec(`DROP TABLE agg_interface_fine; DROP TABLE interface_fine_coverage; DELETE FROM schema_migrations WHERE version >= 2`); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Close(); err != nil {

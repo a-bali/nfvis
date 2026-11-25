@@ -81,6 +81,25 @@ func (s *Store) SweepRetention(ctx context.Context, now time.Time) (RetentionRes
 		}
 	}
 
+	for _, tier := range fineInterfaceTiers {
+		cutoff := (now.UnixMilli() - tier.retentionMS) / tier.resMS * tier.resMS
+		for {
+			res, err := s.db.ExecContext(ctx, `DELETE FROM agg_interface_fine WHERE (res_ms,bucket_ms,exporter,if_index,direction) IN
+				(SELECT res_ms,bucket_ms,exporter,if_index,direction FROM agg_interface_fine WHERE res_ms=? AND bucket_ms<? LIMIT ?)`, tier.resMS, cutoff, batch)
+			if err != nil {
+				return result, fmt.Errorf("delete expired fine interface totals: %w", err)
+			}
+			n, err := res.RowsAffected()
+			if err != nil {
+				return result, err
+			}
+			result.TrafficDeleted += n
+			if n < int64(batch) {
+				break
+			}
+		}
+	}
+
 	if _, err := s.db.ExecContext(ctx,
 		`INSERT INTO collector_state(key, value) VALUES('last_retention_sweep', ?)
 		 ON CONFLICT(key) DO UPDATE SET value=excluded.value`,

@@ -20,10 +20,11 @@ import (
 
 // Store owns the SQLite connection pool.
 type Store struct {
-	db    *sql.DB
-	cfg   config.Config
-	path  string
-	tiers []trafficTier
+	fineInterfaceFrom [2]int64
+	db                *sql.DB
+	cfg               config.Config
+	path              string
+	tiers             []trafficTier
 
 	// Row counts are an O(number of rows) scan, so the dashboard's five-second
 	// polling must not run them every time. They are cached briefly; sizes are
@@ -156,7 +157,14 @@ func Open(cfg config.Config) (*Store, error) {
 		_ = db.Close()
 		return nil, err
 	}
-	return &Store{db: db, cfg: cfg, path: path, tiers: tiers,
+	var fineFrom [2]int64
+	for i, tier := range fineInterfaceTiers {
+		if err := db.QueryRowContext(backfillCtx, `SELECT from_ms FROM interface_fine_coverage WHERE res_ms = ?`, tier.resMS).Scan(&fineFrom[i]); err != nil {
+			_ = db.Close()
+			return nil, fmt.Errorf("read fine interface coverage: %w", err)
+		}
+	}
+	return &Store{db: db, cfg: cfg, path: path, tiers: tiers, fineInterfaceFrom: fineFrom,
 		pc: newPCState(cfg.Database.Dedup.ParentChild, cfg.Database.Dedup.ParentChildLinks),
 		nat: newNatState(cfg.Database.Dedup.NAT.WANAddresses, cfg.Database.Dedup.NAT.Exporters,
 			cfg.Database.Dedup.NAT.Window.Duration())}, nil

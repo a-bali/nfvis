@@ -85,9 +85,9 @@ func TestInterfaceTimeseries(t *testing.T) {
 	}
 	defer st.Close()
 	end := time.Now().UTC().Truncate(time.Minute).Add(-time.Minute)
-	start := end.Add(-3 * time.Hour)
+	start := end.Add(-6 * time.Hour)
 	var flows []model.Flow
-	for _, ts := range []time.Time{start.Add(time.Minute), start.Add(time.Hour), end.Add(-10 * time.Second)} {
+	for _, ts := range []time.Time{start, start.Add(time.Hour), end.Add(-10 * time.Second)} {
 		add := func(exporter string, in, out uint32, bytes, packets uint64) {
 			flows = append(flows, model.Flow{Exporter: exporter, InputIf: in, OutputIf: out, EndMS: ts.UnixMilli(), ReceivedAtMS: ts.UnixMilli(), Bytes: bytes, Packets: packets})
 		}
@@ -115,7 +115,9 @@ func TestInterfaceTimeseries(t *testing.T) {
 		t.Fatalf("unaligned results: %+v", result)
 	}
 	var in, out [3]uint64
-	var hourly, minute bool
+	if len(result.Ingress) != 360 {
+		t.Fatalf("six-hour chart should contain 360 complete minute buckets; got %d", len(result.Ingress))
+	}
 	for i, p := range result.Ingress {
 		q := result.Egress[i]
 		if p.BucketMS != q.BucketMS || p.DurationMS != q.DurationMS || p.DurationMS <= 0 {
@@ -124,8 +126,9 @@ func TestInterfaceTimeseries(t *testing.T) {
 		if i > 0 && result.Ingress[i-1].BucketMS >= p.BucketMS {
 			t.Fatal("bucket order is not increasing")
 		}
-		hourly = hourly || p.DurationMS == 3600000
-		minute = minute || p.DurationMS == 60000
+		if p.DurationMS != 60000 || p.BucketMS != start.Add(time.Duration(i)*time.Minute).UnixMilli() {
+			t.Fatalf("six-hour chart has a gap or non-minute bucket at %d: %+v", i, p)
+		}
 		in[0] += p.Bytes
 		in[1] += p.Packets
 		in[2] += p.Flows
@@ -133,11 +136,32 @@ func TestInterfaceTimeseries(t *testing.T) {
 		out[1] += q.Packets
 		out[2] += q.Flows
 	}
-	if !hourly || !minute {
-		t.Fatalf("want hourly and minute buckets; got %v %v", hourly, minute)
-	}
 	if in != [3]uint64{1890, 21, 6} || out != [3]uint64{450, 9, 6} {
 		t.Fatalf("wrong direction totals: %v %v", in, out)
+	}
+	// A longer window uses complete hourly rollups throughout. Align the
+	// fixture's outer bounds so all three records remain in the selection.
+	query.Set("from", start.Add(-31*24*time.Hour).Truncate(time.Hour).Format(time.RFC3339))
+	query.Set("to", end.Truncate(time.Hour).Add(time.Hour).Format(time.RFC3339))
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, httptest.NewRequest("GET", "/api/v1/interface-timeseries?"+query.Encode(), nil))
+	if rec.Code != 200 {
+		t.Fatalf("hourly chart status %d: %s", rec.Code, rec.Body.String())
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &result); err != nil {
+		t.Fatal(err)
+	}
+	for i, series := range [][]store.Point{result.Ingress, result.Egress} {
+		var total uint64
+		for _, p := range series {
+			if p.DurationMS != 3600000 || p.BucketMS%3600000 != 0 {
+				t.Fatalf("long chart contains non-hourly point: %+v", p)
+			}
+			total += p.Bytes
+		}
+		if want := []uint64{1890, 450}[i]; total != want {
+			t.Fatalf("long chart direction %d: got %d bytes, want %d", i, total, want)
+		}
 	}
 	query.Set("if_index", "0")
 	rec = httptest.NewRecorder()

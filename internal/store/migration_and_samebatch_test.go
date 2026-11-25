@@ -42,6 +42,7 @@ func TestMigration5ReplacesUniqueDedupIndex(t *testing.T) {
 	// Recreate the v4 index on the current data, which has one keyed row.
 	if _, err := st.DB().Exec(`DROP INDEX IF EXISTS idx_flows_dedup_key_lookup;
 		CREATE UNIQUE INDEX idx_flows_dedup_key ON flows(dedup_key) WHERE dedup_key IS NOT NULL;
+		DROP TABLE agg_interface_fine; DROP TABLE interface_fine_coverage;
 		DELETE FROM schema_migrations WHERE version >= 5;`); err != nil {
 		t.Fatalf("simulate v4 schema: %v", err)
 	}
