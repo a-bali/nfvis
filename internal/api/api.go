@@ -51,6 +51,7 @@ func New(cfg config.Config, st *store.Store, collector *ingest.Collector, log *s
 func (a *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /api/v1/health", a.health)
+	mux.HandleFunc("GET /api/v1/status", a.statusHandler)
 	mux.HandleFunc("GET /api/v1/system", a.system)
 	mux.HandleFunc("POST /api/v1/system/dns/cache", a.flushDNSCache)
 	mux.HandleFunc("POST /api/v1/system/retention", a.runRetention)
@@ -284,7 +285,17 @@ type systemResponse struct {
 	API   APIMetricsSnapshot    `json:"api"`
 }
 
-type healthResponse struct {
+// statusResponse is the cheap poll payload: everything the dashboard needs on
+// every refresh, and nothing whose cost scales with the database.
+//
+// It exists because the dashboard polls every five seconds and the client
+// awaits the status call before issuing its primary request, so anything
+// expensive here is paid on every filter change. Database row counts are
+// explicitly not part of it: they are exact counts over the whole raw table
+// (a full index scan on a multi-GB database), the dashboard never read them
+// from this response, and they remain available from /api/v1/system, which is
+// only loaded when the System page is open.
+type statusResponse struct {
 	Version       string          `json:"version"`
 	Status        string          `json:"status"`
 	StartedAt     string          `json:"started_at"`
@@ -292,19 +303,27 @@ type healthResponse struct {
 	HTTPAddr      string          `json:"http_addr"`
 	UDPAddr       string          `json:"udp_addr"`
 	Counters      ingest.Snapshot `json:"counters"`
-	Database      store.Stats     `json:"database"`
 	Coverage      store.Coverage  `json:"coverage"`
 	Warnings      []string        `json:"warnings"`
 }
 
-func (a *Server) health(w http.ResponseWriter, r *http.Request) {
-	ctx := r.Context()
-	stats, dbErr := a.store.Stats(ctx)
+// healthResponse is statusResponse plus the exact storage statistics. The
+// embedded struct is flattened by encoding/json, so the legacy /api/v1/health
+// payload keeps its top-level `database` key.
+type healthResponse struct {
+	statusResponse
+	Database store.Stats `json:"database"`
+}
+
+// status builds the poll payload. It touches only in-memory counters and the
+// index seeks that Coverage performs (MIN/MAX on the time columns), never a
+// row count.
+func (a *Server) status(ctx context.Context) statusResponse {
 	cov, covErr := a.store.Coverage(ctx)
 	counters := a.collector.Counters().Snapshot()
 	warnings := []string{}
 	status := "ok"
-	if dbErr != nil || covErr != nil || !counters.Healthy {
+	if covErr != nil || !counters.Healthy {
 		status = "degraded"
 	}
 	if counters.LastError != "" {
@@ -313,18 +332,36 @@ func (a *Server) health(w http.ResponseWriter, r *http.Request) {
 	if counters.UDPQueueDrops > 0 {
 		warnings = append(warnings, "UDP packets were dropped because the decode queue was full")
 	}
-	if dbErr != nil {
-		warnings = append(warnings, dbErr.Error())
+	if covErr != nil {
+		warnings = append(warnings, covErr.Error())
 	}
 	udpAddr := ""
 	if c := a.collector.Addr(); c != nil {
 		udpAddr = c.String()
 	}
-	writeJSON(w, http.StatusOK, healthResponse{
+	return statusResponse{
 		Version: a.version, Status: status, StartedAt: time.Now().Add(-a.collector.Uptime()).UTC().Format(time.RFC3339),
 		UptimeSeconds: a.collector.Uptime().Seconds(), HTTPAddr: a.cfg.Listen.HTTP, UDPAddr: udpAddr,
-		Counters: counters, Database: stats, Coverage: cov, Warnings: warnings,
-	})
+		Counters: counters, Coverage: cov, Warnings: warnings,
+	}
+}
+
+// statusHandler serves the cheap payload the dashboard polls.
+func (a *Server) statusHandler(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, a.status(r.Context()))
+}
+
+// health serves the legacy payload: the same fields plus exact row counts.
+func (a *Server) health(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	resp := healthResponse{statusResponse: a.status(ctx)}
+	stats, dbErr := a.store.Stats(ctx)
+	if dbErr != nil {
+		resp.Status = "degraded"
+		resp.Warnings = append(resp.Warnings, dbErr.Error())
+	}
+	resp.Database = stats
+	writeJSON(w, http.StatusOK, resp)
 }
 
 func (a *Server) dnsStats() ingest.DNSStats { return a.collector.DNSStats() }

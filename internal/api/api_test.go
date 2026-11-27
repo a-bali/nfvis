@@ -119,7 +119,10 @@ func TestUDPIngestToAPI(t *testing.T) {
 
 	deadline := time.Now().Add(5 * time.Second)
 	for {
-		resp, err := http.Get(server.URL + "/api/v1/health")
+		// /api/v1/system still carries the exact counts; /health does too, but the
+		// dashboard no longer reads them, so the ingest assertion lives where the
+		// System page gets its data.
+		resp, err := http.Get(server.URL + "/api/v1/system")
 		if err == nil {
 			var body map[string]interface{}
 			_ = json.NewDecoder(resp.Body).Decode(&body)
@@ -129,7 +132,7 @@ func TestUDPIngestToAPI(t *testing.T) {
 			}
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("flow never reached SQLite: last health=%v", resp)
+			t.Fatalf("flow never reached SQLite: last system=%v", resp)
 		}
 		time.Sleep(25 * time.Millisecond)
 	}

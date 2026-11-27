@@ -16,7 +16,7 @@ go test ./internal/decoder -run '^$' -bench BenchmarkDecode -benchtime=3s -bench
 GO='nix shell nixpkgs#go --command go' DURATION=60s TARGET=1000 ./benchmark/soak.sh
 ```
 
-The soak run starts nfvis on alternative ports, sends synthetic v5 traffic at 1,000 flows/s (30 flows/datagram), then reads counter deltas from `/api/v1/health` and times representative API queries with `curl`.
+The soak run starts nfvis on alternative ports, sends synthetic v5 traffic at 1,000 flows/s (30 flows/datagram), then reads counter deltas from `/api/v1/status` and times representative API queries with `curl`.
 
 ## Decoder microbenchmarks
 
@@ -50,7 +50,7 @@ The generator uses a 10 ms pacing tick, so a small rate shortfall is expected. N
 
 | Endpoint | `time_total` |
 | --- | ---: |
-| `/api/v1/health` | 0.0058 s |
+| `/api/v1/status` | 0.0058 s |
 | `/api/v1/timeseries` | 0.0507 s |
 | `/api/v1/top?dimension=host` | 0.0511 s |
 | `/api/v1/flows?limit=100` | 0.0104 s |

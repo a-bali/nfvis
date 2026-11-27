@@ -7,10 +7,10 @@ import {
   type Exporter,
   type Flow,
   type FlowPage,
-  type Health,
   type InterfaceSeries,
   type Range,
   type SplitSeries,
+  type Status,
   type SystemStats,
   type Timeseries,
   type Top,
@@ -435,7 +435,10 @@ export default function App() {
   const dismissNotice = (key: string) => setDismissedNotices((previous) => new Set(previous).add(key));
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
   const [now, setNow] = useState(() => Date.now());
-  const [health, setHealth] = useState<Health | null>(null);
+  const [health, setHealth] = useState<Status | null>(null);
+  // A status failure is kept separate from `error` so that a cheap-but-broken
+  // status endpoint cannot blank a table that is loading fine.
+  const [statusError, setStatusError] = useState('');
   const [system, setSystem] = useState<SystemStats | null>(null);
   const [flushingDNS, setFlushingDNS] = useState(false);
   const [runningRetention, setRunningRetention] = useState(false);
@@ -516,14 +519,33 @@ export default function App() {
     return () => window.removeEventListener('popstate', onPop);
   }, []);
 
+  // Visibility gating for the poll. A hidden tab used to keep polling, so three
+  // open tabs tripled the request rate (measured: split charts 6.7 s each solo,
+  // 13.8 s each together) for a screen nobody is looking at. `visible` is state
+  // rather than a ref so the poll can re-arm the moment the tab is shown again.
+  const [visible, setVisible] = useState(() => !document.hidden);
+  useEffect(() => {
+    const onVisibility = () => setVisible(!document.hidden);
+    document.addEventListener('visibilitychange', onVisibility);
+    return () => document.removeEventListener('visibilitychange', onVisibility);
+  }, []);
+
   // Poll five seconds after the previous load settled rather than on a fixed
   // interval: a range or filter change that takes longer than the interval
   // would otherwise be aborted by the next tick before it could finish.
   useEffect(() => {
-    if (paused) return;
+    if (paused || !visible) return;
     const id = window.setTimeout(() => setTick((v) => v + 1), 5000);
     return () => window.clearTimeout(id);
-  }, [paused, settled]);
+  }, [paused, visible, settled]);
+
+  // Coming back to a hidden tab refreshes immediately instead of showing
+  // whatever was on screen when it was hidden.
+  const wasVisible = useRef(visible);
+  useEffect(() => {
+    if (visible && !wasVisible.current) setTick((v) => v + 1);
+    wasVisible.current = visible;
+  }, [visible]);
 
   useEffect(() => {
     const id = window.setInterval(() => setNow(Date.now()), 1000);
@@ -592,6 +614,42 @@ export default function App() {
   const loadedFlowQueryKey = useRef<string | null>(null);
   const flowReqSeq = useRef(0);
 
+  // Polling is split into two independent effects, deliberately:
+  //
+  //   1. status  — /api/v1/status and the exporter list. Cheap, and only used
+  //                for the coverage hints, the version badge and the header
+  //                warnings, so it can land whenever it lands.
+  //   2. primary — whatever the current view is showing: ranked rows, the flow
+  //                table, the chart, or system statistics.
+  //
+  // They used to be one effect that awaited the status call before issuing the
+  // primary request, which meant a slow (or failing) status response held rows
+  // off the screen even though nothing about them depended on it. A `tick`
+  // still paces both so they refresh on the same cadence.
+  useEffect(() => {
+    const controller = new AbortController();
+    const signal = controller.signal;
+    const load = async () => {
+      try {
+        const h = await track(api.status(signal));
+        if (!signal.aborted) setHealth(h);
+      } catch (err) {
+        // A status failure must not clear a table or raise the page banner: it
+        // only decides how much confidence the header and coverage hints have.
+        if (!signal.aborted) setStatusError(err instanceof Error ? err.message : String(err));
+        return;
+      }
+      try {
+        const e = await track(api.exporters(signal));
+        if (!signal.aborted) setExporters(e.exporters);
+      } catch {
+        // Exporter labels are decoration; keep the previous list.
+      }
+    };
+    void load();
+    return () => controller.abort();
+  }, [tick]);
+
   useEffect(() => {
     const controller = new AbortController();
     const signal = controller.signal;
@@ -616,11 +674,6 @@ export default function App() {
 
     const load = async () => {
       try {
-        const [h, e] = await Promise.all([track(api.health(signal)), track(api.exporters(signal))]);
-        if (cancelled) return;
-        setHealth(h);
-        setExporters(e.exporters);
-
         if (nav.view === 'system') {
           const s = await track(api.system(signal));
           if (cancelled) return;
@@ -631,7 +684,7 @@ export default function App() {
           setFlows(null);
         } else if (nav.view === 'overview') {
           const end = Date.now();
-          const selection = selectedOverviewInterface(overviewInterfaces(e.exporters), nav.overviewInterface);
+          const selection = selectedOverviewInterface(overviewInterfaces(exportersRef.current), nav.overviewInterface);
           const [interfaceSeries, ts, ...recent] = await Promise.all([
             selection ? track(api.interfaceTimeseries(range, selection.address, selection.index, signal)) : Promise.resolve(null),
             track(api.timeseries(range, {}, { metric: nav.metric }, signal)),
@@ -730,6 +783,15 @@ export default function App() {
     }
   };
 
+  // The VLAN list is a lookup table, not live data: it is fetched once per
+  // view/range *shape* and reused. It used to depend on `range`, which is
+  // rebuilt from Date.now() on every poll tick, so the effect re-ran every five
+  // seconds and re-ran two `top` rankings (measured 510 ms each) to rebuild a
+  // list that has held the same seven values for a month.
+  const vlanRangeKey = useMemo(
+    () => (nav.rangeKey === 'Custom' ? `custom:${nav.customFrom}:${nav.customTo}` : nav.rangeKey),
+    [nav.rangeKey, nav.customFrom, nav.customTo],
+  );
   useEffect(() => {
     if (nav.view !== 'flows') {
       setVlanOptions([]);
@@ -760,7 +822,18 @@ export default function App() {
     };
     void load();
     return () => controller.abort();
-  }, [nav.view, range]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- keyed on the range
+    // *shape*, not the Date.now()-derived `range` object, so polling does not
+    // refetch a static list every five seconds.
+  }, [nav.view, vlanRangeKey]);
+
+  // The primary effect needs the exporter list to resolve the Overview's
+  // interface selection, but it must not re-run when that list arrives: it
+  // already re-runs on every tick, and making the list a dependency would fire
+  // a duplicate (aborted-and-reissued) request per poll. A ref carries the
+  // latest value without joining the dependency array.
+  const exportersRef = useRef<Exporter[]>([]);
+  exportersRef.current = exporters;
 
   const changeView = (next: View) => {
     updateNav(
@@ -1078,6 +1151,7 @@ export default function App() {
         </header>
 
         {error && !dismissedNotices.has(`error:${error}`) && <Banner tone="error" onDismiss={() => dismissNotice(`error:${error}`)}>API error: {error}. Retrying automatically.</Banner>}
+        {statusError && !dismissedNotices.has(`status:${statusError}`) && <Banner tone="warn" onDismiss={() => dismissNotice(`status:${statusError}`)}>Status is unavailable ({statusError}); the version, coverage hints and collector cards may be stale. Data requests are unaffected.</Banner>}
         {health?.warnings?.length && !dismissedNotices.has(`health:${health.warnings.join(' · ')}`) ? <Banner tone="warn" onDismiss={() => dismissNotice(`health:${health.warnings.join(' · ')}`)}>{health.warnings.join(' · ')}</Banner> : null}
         {aggregateNotice && !dismissedNotices.has(`aggregate:${aggregateNotice}`) && <Banner tone="warn" onDismiss={() => dismissNotice(`aggregate:${aggregateNotice}`)}>{aggregateNotice} Choose a more recent time range for individual flows.</Banner>}
         {limitations.filter((l) => !dismissedNotices.has(`limitation:${l}`)).map((l) => <Banner key={l} onDismiss={() => dismissNotice(`limitation:${l}`)}>{l}</Banner>)}

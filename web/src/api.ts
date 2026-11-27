@@ -13,6 +13,12 @@ export type Health = {
   warnings: string[];
 };
 
+// Status is the cheap poll payload: the same shape as Health without the
+// `database` block, whose row counts are exact full-table aggregates. The
+// dashboard polls this every five seconds; /api/v1/health keeps the counts for
+// anything that wants them, and the System page reads /api/v1/system.
+export type Status = Omit<Health, 'database'>;
+
 export type SystemStats = {
   started_at: string;
   uptime_seconds: number;
@@ -252,7 +258,11 @@ function params(values: Record<string, string | number | undefined>): string {
 }
 
 export const api = {
+  // Status is typed separately from Health: it carries no `database` block, so
+  // the compiler stops anyone reintroducing a dependency on costly counts in
+  // the poll path.
   health: (signal?: AbortSignal) => get<Health>('/api/v1/health', signal),
+  status: (signal?: AbortSignal) => get<Status>('/api/v1/status', signal),
   system: (signal?: AbortSignal) => get<SystemStats>('/api/v1/system', signal),
   flushDNSCache: () => post<DNSFlushResult>('/api/v1/system/dns/cache'),
   runRetention: () => post<RetentionRunResult>('/api/v1/system/retention'),

@@ -25,7 +25,7 @@ func main() {
 	perPacket := flag.Int("flows-per-packet", 30, "flows per UDP datagram")
 	sourceIP := flag.String("source-ip", "", "optional UDP source IP (exporter identity)")
 	v9 := flag.Bool("v9", false, "send v9 instead of v5")
-	httpURL := flag.String("health", "http://127.0.0.1:8080/api/v1/health", "health endpoint for counter deltas")
+	httpURL := flag.String("health", "http://127.0.0.1:8080/api/v1/status", "status endpoint for counter deltas")
 	flag.Parse()
 
 	if *target < 1 || *perPacket < 1 || *perPacket > 200 {
