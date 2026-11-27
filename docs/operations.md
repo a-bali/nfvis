@@ -195,7 +195,9 @@ Both values are retained so byte and flow totals stay accurate. They are labeled
 
 ## Health monitoring
 
-`GET /api/v1/health` returns status, uptime, HTTP/UDP addresses, collector counters, database size/row counts, coverage, and warnings.
+`GET /api/v1/status` is the cheap poll payload: status, uptime, HTTP/UDP addresses, collector counters, coverage, and warnings. `GET /api/v1/health` returns the same fields **plus** database size and exact row counts, which it shares with `/api/v1/system`.
+
+Prefer `/api/v1/status` for anything that runs frequently. The row counts in `/health` are exact aggregates over the whole raw table — `COUNT(*) FROM flows` is a full scan of the end-time index, which measured 6.5 s at 1.5 M rows and 16.7 s at 4.5 M rows with a cold page cache. A five-second dashboard poll must not pay that, and the dashboard itself reads only `coverage` and `counters`. Point monitors and probes at `/status`; read the counts from `/system` when a human is looking at the System page.
 
 Watch these counters:
 

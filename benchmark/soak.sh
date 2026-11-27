@@ -42,15 +42,15 @@ PID=$!
 trap 'kill "$PID" 2>/dev/null || true' EXIT
 
 for _ in $(seq 1 50); do
-  if curl -fsS "$HTTP/api/v1/health" >/dev/null 2>&1; then break; fi
+  if curl -fsS "$HTTP/api/v1/status" >/dev/null 2>&1; then break; fi
   sleep 0.1
 done
 
 echo "load: target=$TARGET flows/s duration=$DURATION"
-"$WORK/loadgen" -addr "$UDP" -health "$HTTP/api/v1/health" -target "$TARGET" -duration "$DURATION"
+"$WORK/loadgen" -addr "$UDP" -health "$HTTP/api/v1/status" -target "$TARGET" -duration "$DURATION"
 
 echo "query latency samples (seconds):"
-for path in "health" "timeseries" "top?dimension=host" "flows?limit=100" "coverage"; do
+for path in "status" "timeseries" "top?dimension=host" "flows?limit=100" "coverage"; do
   curl -sS -o /dev/null -w "  /api/v1/$path total=%{time_total} status=%{http_code}\n" "$HTTP/api/v1/$path"
 done
 
