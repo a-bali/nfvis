@@ -62,7 +62,10 @@ func (a *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/v1/top", a.top)
 	mux.HandleFunc("GET /api/v1/flows", a.flows)
 	mux.Handle("/", a.static())
-	return a.recoverMiddleware(a.metricsMiddleware(mux))
+	// Order matters: gzip sits innermost so the metrics wrapper still sees the
+	// uncompressed size the handler produced, and the panic recovery stays
+	// outermost so it can still write a plain error for a panicking handler.
+	return a.recoverMiddleware(a.metricsMiddleware(gzipMiddleware(mux)))
 }
 
 // metricsMiddleware records duration and response size for every API request, so
@@ -130,7 +133,20 @@ func (a *Server) static() http.Handler {
 				return
 			}
 		}
-		w.Header().Set("Cache-Control", "no-cache")
+		// Vite emits content-hashed filenames under /assets/, so one URL's bytes
+		// never change: cache them for a year and skip the revalidation
+		// round-trip. Everything else — index.html above all — must revalidate,
+		// because it is what names the current bundle after a deploy.
+		//
+		// Measured before this change: three consecutive page loads each
+		// transferred the 786 KB bundle again, because every path was served
+		// `no-cache` and the FileServer sends neither ETag nor Last-Modified, so
+		// there was nothing to revalidate against either.
+		if strings.HasPrefix(r.URL.Path, "/assets/") {
+			w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+		} else {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
 		fileServer.ServeHTTP(w, r)
 	})
 }
