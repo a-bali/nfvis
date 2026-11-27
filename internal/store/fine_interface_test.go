@@ -44,7 +44,12 @@ func TestUpgradeBackfillsFineInterfacesAndReopenDoesNotDuplicate(t *testing.T) {
 	if err := st.InsertBatch(ctx, []model.Flow{a, b}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := st.DB().Exec(`DROP TABLE agg_interface_fine; DROP TABLE interface_fine_coverage; DELETE FROM schema_migrations WHERE version=6`); err != nil {
+	// Reset *only* the fine-interface migration and everything after it, so the
+	// migrator re-runs it. Naming the version literally made this test fail the
+	// moment a later migration was added: the recorded version stayed at the new
+	// maximum, the deleted tables were never recreated, and the failure surfaced
+	// far from its cause.
+	if _, err := st.DB().Exec(`DROP TABLE agg_interface_fine; DROP TABLE interface_fine_coverage; DELETE FROM schema_migrations WHERE version >= 6`); err != nil {
 		t.Fatal(err)
 	}
 	if err := st.Close(); err != nil {
