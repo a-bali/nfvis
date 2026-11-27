@@ -9,7 +9,7 @@ import (
 )
 
 // schemaVersion is incremented for every compatibility-breaking schema change.
-const schemaVersion = 6
+const schemaVersion = 7
 
 var migrations = []string{
 	`CREATE TABLE IF NOT EXISTS flows (
@@ -182,6 +182,28 @@ var migrations = []string{
 		(max(oldest, unixepoch('now') * 1000 - keep_ms) + res - 1) / res * res END
 	FROM (SELECT 60000 AS res, 604800000 AS keep_ms UNION ALL SELECT 300000, 2592000000)
 	CROSS JOIN (SELECT MIN(end_ms) AS oldest FROM flows);`,
+	// A covering index for the time-range rankings the dashboard polls.
+	//
+	// `top` with an explicit direction ranks by one endpoint address over a time
+	// window, which is `SELECT src_addr, SUM(bytes), …, COUNT(*) FROM flows WHERE
+	// end_ms >= ? AND end_ms < ? GROUP BY 1`. The plain idx_flows_end answers the
+	// range but then needs the table row for every match to read bytes, packets,
+	// sampled and the address, so SQLite touches the table as well as the index.
+	// With every projected column in the index, the scan is index-only.
+	//
+	// Measured through the HTTP API on a 1.5 M-row database, three runs each:
+	// top host 1 h 84 ms -> 45 ms, 6 h 90 ms -> 45 ms, 24 h 95 ms -> 52 ms.
+	// Dimensions not covered here (vlan, interface, protocol, exporter) are
+	// unchanged, so this is not a general win — it is the shape the dashboard
+	// hits most often.
+	//
+	// Cost: 66 MiB on 1.5 M rows (12 % of the database) and about 30 % more
+	// write time per flow (0.148 -> 0.196 ms/flow measured with the page cache
+	// dropped between runs; measured without dropping it, the index appears
+	// free, which is how this figure is easy to get wrong). Building it cost 8 s
+	// at 1.5 M rows, so expect several minutes on a multi-GB table — the
+	// migration budget applies.
+	`CREATE INDEX IF NOT EXISTS idx_flows_endcover ON flows(end_ms, src_addr, dst_addr, bytes, packets, sampled);`,
 }
 
 func migrate(ctx context.Context, db *sql.DB) error {
