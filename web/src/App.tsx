@@ -656,7 +656,16 @@ export default function App() {
     let cancelled = false;
     setError('');
     setAggregateNotice('');
-    const showSpinner = chartView && loadedQueryKey.current !== chartQueryKey;
+    // A dependency view has never been fetched at mount. Keying the spinner off
+    // "has this query key been loaded" therefore had to fail on the first load:
+    // the ref starts equal to the current key, so the spinner stayed off and the
+    // panel fell through to its empty state until the request landed. That is the
+    // "no data" flash on the overview. `directional === null` says plainly that
+    // the series for the selected interface has never arrived, so the spinner
+    // covers the first load without re-arming on every polling tick.
+    const directionalView = nav.view === 'overview' && !!overviewSelection;
+    const showSpinner = chartView
+      && (loadedQueryKey.current !== chartQueryKey || (directionalView && !directional));
     if (showSpinner) setChartLoading(true);
     // Deliberate changes to what the flows table shows — filters, page, sort —
     // set a spinner on the rows. A polling tick also refetches, but it must not
@@ -688,7 +697,15 @@ export default function App() {
           const [interfaceSeries, ts, ...recent] = await Promise.all([
             selection ? track(api.interfaceTimeseries(range, selection.address, selection.index, signal)) : Promise.resolve(null),
             track(api.timeseries(range, {}, { metric: nav.metric }, signal)),
-            ...[5 * 60_000, 60 * 60_000, 24 * 60 * 60_000].map((duration) => track(api.timeseries({ from_ms: end - duration, to_ms: end }, {}, { metric: 'bytes' }, signal))),
+            // These three cards only display a total for the window, so one bucket
+            // per window is enough: 1441 one-minute points carry the same sum as a
+            // single 24 h point and cost a 26 KB body and 4.3s instead of 200 B.
+            // The card reads `points.reduce((sum, p) => sum + p.bytes)`, so a single
+            // bucket is not an approximation of the total — it is the total.
+            ...[5 * 60_000, 60 * 60_000, 24 * 60 * 60_000].map((duration) => track(api.timeseries(
+              { from_ms: end - duration, to_ms: end }, {},
+              { metric: 'bytes', bucketSeconds: Math.ceil(duration / 1000) }, signal,
+            ))),
           ]);
           if (cancelled) return;
           setDirectional(selection && interfaceSeries ? { key: selection.key, series: interfaceSeries } : null);
@@ -1012,6 +1029,11 @@ export default function App() {
   const tsOption = useMemo(() => overviewSelection
     ? seriesOption(null, [], { result: visibleDirectional, wan: overviewSelection.wan })
     : seriesOption(timeseries), [timeseries, nav.metric, overviewSelection, visibleDirectional]);
+  // Three states, and they must stay distinct: loading, loaded-and-empty, and
+  // loaded-with-data. Collapsing the first two is what makes a slow query look
+  // like a missing exporter. `!flowSeries` marks a series that has been cleared
+  // for another view, so it does not count as "loaded".
+  const overviewLoaded = overviewSelection ? !!visibleDirectional : timeseries !== null;
   const overviewHasData = overviewSelection
     ? !!visibleDirectional?.ingress.some((point, i) => point.flows || visibleDirectional.egress[i]?.flows)
     : !!timeseries?.points.length;
@@ -1179,7 +1201,9 @@ export default function App() {
               </label>
               {metricToggle}
             </div>}>
-              {overviewHasData ? (
+              {!overviewLoaded ? (
+                <Chart option={tsOption} resetKey={overviewResetKey} loading height={400} />
+              ) : overviewHasData ? (
                 <Chart
                   option={tsOption}
                   height={400}
@@ -1187,8 +1211,6 @@ export default function App() {
                   onZoom={applyChartZoom}
                   loading={chartLoading}
                 />
-              ) : chartLoading ? (
-                <Chart option={tsOption} resetKey={overviewResetKey} loading height={400} />
               ) : (
                 <Empty title="No traffic in this range" detail="Check exporter configuration or widen the time range." />
               )}
